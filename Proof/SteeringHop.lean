@@ -268,6 +268,166 @@ theorem bind_familyLaw_steeredReleased_eq [FieldCertificate] [GroupCertificate]
         carrier (raw.table bridgeKey key) (encodeCoordinates outcome.1.1 raw).hash outcome
         onCurve)
 
+/-! ### The hop at full granularity: the two fiber samples in the sample -/
+
+/-- The steered second stage with its steering fiber exposed, and **no** freshness side
+condition: the steering already samples a fiber of the wanted value and then programs, and
+the wanted value is the steering gate's shifted output.
+
+Exposing the sample before the freshness step is what lets the charge put both fiber samples
+into the sample space of the hop. That order is forced: the steered range is a chunk of this
+very sample, so the bad event mentions it, while the selected label -- the variable the bad
+event is charged over -- has to be sampled *after* it. -/
+theorem selectedSimulatedStageTwo_programAll [FieldCertificate] [GroupCertificate]
+    (scalar : NonZeroScalar) (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (view : View) (key : InputMacKey) (carrier : NonZeroBase) (bridgeKey : BaseField)
+    (raw : Coordinates) (priorLog : List Query) (input : AffineInput)
+    (advState : adversary.State) (fibers : GateValues (BitVec 384))
+    (fiberValues : ∀ adaptor position, (((fibers adaptor position).toNat : Nat) : BaseField) =
+      (encodeCoordinates input raw).hash adaptor position)
+    (onCurve : curveGap input = 0) :
+    selectedSimulatedStageTwo adversary parameter auxiliary
+        (raw.table bridgeKey key, carrierBits carrier) input
+        (checkedScalarMultiplication scalar.value input) advState
+        (encodeCoordinates input raw).hash fibers
+        (stageTwoState view priorLog (raw.table bridgeKey key) carrier key) =
+      (uniformHashFiber ((encodeCoordinates input raw).hash .x7 0 +
+          (hybridBridge scalar carrier - bridgeKey))).bind fun hash =>
+        hybridStageTwo adversary parameter auxiliary
+          (raw.table bridgeKey key, carrierBits carrier) input advState
+          (programAll (stageTwoState (programIndices (selectedPrograms key input
+              (encodeCoordinates input raw).hash (tableRow (raw.table bridgeKey key)) fibers)
+              view.1, view.2) priorLog (raw.table bridgeKey key) carrier key)
+            (steerRequests (raw.table bridgeKey key) (selectedLabel key input .x7 0) input
+              ((encodeCoordinates input raw).hash .x7 0 +
+                (hybridBridge scalar carrier - bridgeKey)) hash)) := by
+  have stateEq : programSelected
+      (stageTwoState view priorLog (raw.table bridgeKey key) carrier key) input
+      (encodeCoordinates input raw).hash fibers =
+      stageTwoState (programIndices (selectedPrograms key input
+        (encodeCoordinates input raw).hash (tableRow (raw.table bridgeKey key)) fibers) view.1,
+        view.2) priorLog (raw.table bridgeKey key) carrier key :=
+    programSelected_stageTwoState view priorLog (raw.table bridgeKey key) carrier key input
+      (encodeCoordinates input raw).hash fibers
+  have targetEq : steeringTarget carrier input
+      (checkedScalarMultiplication scalar.value input) = some (hybridBridge scalar carrier) :=
+    steeringTarget_onCurve carrier scalar input onCurve
+  have wantedEq : steeringWanted (programIndices (selectedPrograms key input
+        (encodeCoordinates input raw).hash (tableRow (raw.table bridgeKey key)) fibers) view.1,
+      view.2) (raw.table bridgeKey key) input (key.encodeAffine input)
+      (hybridBridge scalar carrier) =
+      (encodeCoordinates input raw).hash .x7 0 + (hybridBridge scalar carrier - bridgeKey) :=
+    steeringWanted_programSelected view.1 bridgeKey key raw input fibers
+      (hybridBridge scalar carrier) _ rfl fiberValues onCurve
+  show simulatedStageTwo adversary parameter auxiliary
+      (raw.table bridgeKey key, carrierBits carrier) input
+      (checkedScalarMultiplication scalar.value input) advState
+      (programSelected (stageTwoState view priorLog (raw.table bridgeKey key) carrier key) input
+        (encodeCoordinates input raw).hash fibers) = _
+  rw [stateEq, simulatedStageTwo_eq,
+    simulateRequestLaw_some _ input _ (hybridBridge scalar carrier) targetEq,
+    steerRequestLaw_eq_map]
+  simp only [stageTwoState_view, stageTwoState_table, stageTwoState_inputMacKey]
+  rw [wantedEq, PMF.bind_map]
+  refine congrArg (PMF.bind _) (funext fun hash => ?_)
+  simp only [Function.comp_apply]
+  rw [show ((key.encodeAffine input).x.get 0) = selectedLabel key input .x7 0 from
+    gateMac_encodeAffine key input .x7 0]
+  simp only [hybridStageTwo, programAll_inputMacKey, stageTwoState_inputMacKey]
+
+/-- The steered reference second stage with both fiber samples exposed, unconditionally on
+the curve. -/
+theorem steeredReleasedStageTwo_programAll [FieldCertificate] [GroupCertificate]
+    (scalar : NonZeroScalar) (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (view : View) (key : InputMacKey) (carrier : NonZeroBase) (bridgeKey : BaseField)
+    (raw : Coordinates) (outcome : (AffineInput × adversary.State) × List Query)
+    (onCurve : curveGap outcome.1.1 = 0) :
+    steeredReleasedStageTwo scalar adversary parameter auxiliary view key carrier
+        (raw.table bridgeKey key) (encodeCoordinates outcome.1.1 raw).hash outcome =
+      (uniformHashFibers (encodeCoordinates outcome.1.1 raw).hash).bind fun fibers =>
+        (uniformHashFiber ((encodeCoordinates outcome.1.1 raw).hash .x7 0 +
+            (hybridBridge scalar carrier - bridgeKey))).bind fun hash =>
+          (hybridStageTwo adversary parameter auxiliary
+              (raw.table bridgeKey key, carrierBits carrier) outcome.1.1 outcome.1.2
+              (programAll (stageTwoState (programIndices (selectedPrograms key outcome.1.1
+                  (encodeCoordinates outcome.1.1 raw).hash
+                  (tableRow (raw.table bridgeKey key)) fibers) view.1, view.2)
+                outcome.2 (raw.table bridgeKey key) carrier key)
+                (steerRequests (raw.table bridgeKey key) (selectedLabel key outcome.1.1 .x7 0)
+                  outcome.1.1 ((encodeCoordinates outcome.1.1 raw).hash .x7 0 +
+                    (hybridBridge scalar carrier - bridgeKey)) hash))).map Prod.fst := by
+  rw [steeredReleasedStageTwo]
+  refine bind_congr_support fun fibers member => ?_
+  rw [selectedSimulatedStageTwo_programAll scalar adversary parameter auxiliary view key carrier
+    bridgeKey raw outcome.2 outcome.1.1 outcome.1.2 fibers
+    (fiberValues_of_mem_uniformHashFibers _ fibers member) onCurve, PMF.map_bind]
+
+/-- **The hop, at the granularity the charge consumes.** With the two fiber samples and the
+selected label already fixed, and the transcripts blocking none of the labels the steering
+programs, the steered second stage and the shifted second stage are the same law.
+
+The freshness step is inside the good region (it needs the transcript conditions for the
+given sample), and the law equality is one application of `familyLaw_double` over all the
+programmed indices at once. -/
+theorem bind_familyLaw_programAll_eq_shifted (adversary : Adversary) (parameter : Nat)
+    (auxiliary : Unit)
+    (rest : PermutationOracle Garbling.EncIndex Block × (BN254.BaseField → Block × Block))
+    (key : InputMacKey) (carrier : NonZeroBase) (table : CurveMembership.Table)
+    (input : AffineInput) (advState : adversary.State) (log : List Query)
+    (outputs : GateValues BaseField) (fibers : GateValues (BitVec 384)) (wanted : BaseField)
+    (hash : BitVec 384) (assigns : FamilyAssignment) (injective : FamilyInjective assigns)
+    (covers : FamilyCovers assigns log)
+    (good : ¬ steeringBlocked assigns
+      (selectedPrograms key input outputs (tableRow table) fibers)
+      (steerPrograms key input wanted hash (tableRow table .x7 0))) :
+    ((familyLaw assigns).bind fun oracle =>
+        (hybridStageTwo adversary parameter auxiliary (table, carrierBits carrier) input advState
+            (programAll (stageTwoState (programIndices (selectedPrograms key input outputs
+                (tableRow table) fibers) oracle, rest) log table carrier key)
+              (steerRequests table (selectedLabel key input .x7 0) input wanted hash))).map
+          Prod.fst) =
+      (familyLaw assigns).bind fun oracle =>
+        (hybridStageTwo adversary parameter auxiliary (table, carrierBits carrier) input advState
+            (stageTwoState (shiftedOracle key input outputs (tableRow table) fibers wanted hash
+              oracle, rest) log table carrier key)).map Prod.fst := by
+  have step : ((familyLaw assigns).bind fun oracle =>
+        (hybridStageTwo adversary parameter auxiliary (table, carrierBits carrier) input advState
+            (programAll (stageTwoState (programIndices (selectedPrograms key input outputs
+                (tableRow table) fibers) oracle, rest) log table carrier key)
+              (steerRequests table (selectedLabel key input .x7 0) input wanted hash))).map
+          Prod.fst) =
+      (familyLaw assigns).bind fun oracle =>
+        (hybridStageTwo adversary parameter auxiliary (table, carrierBits carrier) input advState
+            (stageTwoState (doubleSteeredOracle key input outputs (tableRow table) fibers wanted
+              hash oracle, rest) log table carrier key)).map Prod.fst := by
+    refine bind_congr_support fun oracle member => ?_
+    have programmed : programAll (stageTwoState (programIndices (selectedPrograms key input
+            outputs (tableRow table) fibers) oracle, rest) log table carrier key)
+          (steerRequests table (selectedLabel key input .x7 0) input wanted hash) =
+        stageTwoState (doubleSteeredOracle key input outputs (tableRow table) fibers wanted hash
+          oracle, rest) log table carrier key :=
+      programAll_steerRequests _ key input wanted hash fun request requestMember =>
+        steerRequests_fresh_of_covers key input table outputs fibers wanted hash oracle assigns
+          (familyLaw_support assigns injective member) log covers good request requestMember
+    rw [programmed]
+  rw [step]
+  exact familyLaw_double assigns injective
+    (selectedPrograms key input outputs (tableRow table) fibers)
+    (steerPrograms key input wanted hash (tableRow table .x7 0))
+    (selectedPrograms key input (setSteering wanted outputs) (tableRow table)
+      (setSteering hash fibers))
+    (fun index steeredNone => steerPrograms_untouched key input outputs
+      (setSteering wanted outputs) (tableRow table) fibers wanted hash
+      (fun adaptor position atGate => setSteering_other wanted outputs adaptor position atGate)
+      index steeredNone)
+    (steerPrograms_covered key input outputs (tableRow table) fibers wanted hash)
+    (steerPrograms_retargeted key input (setSteering wanted outputs) (tableRow table) fibers
+      wanted hash (setSteering_steeringGate wanted outputs))
+    (good_of_not_steeringBlocked assigns _ _ good)
+    (fun oracleView => (hybridStageTwo adversary parameter auxiliary
+        (table, carrierBits carrier) input advState
+        (stageTwoState (oracleView, rest) log table carrier key)).map Prod.fst)
+
 end
 
 end Kriterion.ArgoMAC.Security
