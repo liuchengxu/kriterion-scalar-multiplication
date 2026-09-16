@@ -17,6 +17,7 @@ programming erases. Everything here is built on that one bijection.
 -/
 
 import Proof.Logged
+import Proof.Uniform
 import Cryptography.Permutation
 
 namespace Kriterion.ArgoMAC.Security
@@ -355,6 +356,64 @@ theorem compatibleSplit_snd (assign : Assignment) (injective : AssignmentInjecti
     (permutation : {permutation : Equiv Block Block // Compatible assign permutation}) :
     (compatibleSplit assign injective input fresh base baseFresh permutation).2.1 =
       permutation.1 input := rfl
+
+/-! ### The forward marginalisation -/
+
+/-- Reading a uniform compatible permutation at an unpinned input is the same as drawing the
+answer uniformly from the unpinned values first and conditioning the permutation on it. -/
+theorem compatibleLaw_forward {Result : Type} (assign : Assignment)
+    (injective : AssignmentInjective assign) (input : Block) (fresh : assign input = none)
+    (continuation : Block → Equiv Block Block → PMF Result) :
+    ((compatibleLaw assign).bind fun permutation => continuation (permutation input) permutation) =
+      (freshValueLaw assign).bind fun value =>
+        (compatibleLaw (Function.update assign input (some value))).bind fun permutation =>
+          continuation value permutation := by
+  classical
+  obtain ⟨base⟩ := unused_nonempty assign injective input fresh
+  haveI unusedNonempty : Nonempty {value : Block // value ∉ pinnedRange assign} := ⟨base⟩
+  haveI compatibleNonempty := nonempty_compatible assign injective
+  haveI baseNonempty : Nonempty {permutation : Equiv Block Block //
+      Compatible (Function.update assign input (some base.1)) permutation} :=
+    nonempty_compatible _ (update_injective assign injective input base.1 base.2)
+  rw [compatibleLaw_eq assign compatibleNonempty, freshValueLaw_eq assign unusedNonempty,
+    uniform_map_val_bind, uniform_map_val_bind]
+  haveI extendedNonempty : ∀ value : {value : Block // value ∉ pinnedRange assign},
+      Nonempty {permutation : Equiv Block Block //
+        Compatible (Function.update assign input (some value.1)) permutation} := fun value =>
+    nonempty_compatible _ (update_injective assign injective input value.1 value.2)
+  have extended : ((PMF.uniformOfFintype {value : Block // value ∉ pinnedRange assign}).bind
+        fun value => (compatibleLaw (Function.update assign input (some value.1))).bind
+          fun permutation => continuation value.1 permutation) =
+      (PMF.uniformOfFintype {value : Block // value ∉ pinnedRange assign}).bind fun value =>
+        (PMF.uniformOfFintype {permutation : Equiv Block Block //
+            Compatible (Function.update assign input (some value.1)) permutation}).bind
+          fun permutation => continuation value.1 permutation.1 := by
+    refine congrArg (PMF.bind _) (funext fun value => ?_)
+    rw [compatibleLaw_eq _ (extendedNonempty value), uniform_map_val_bind]
+  rw [extended]
+  have transported := uniformOfFintype_bind_of_equiv
+    (compatibleSplit assign injective input fresh base.1 base.2)
+    (fun pair => continuation pair.2.1 (pair.1.1.trans (Equiv.swap base.1 pair.2.1)))
+  have split : ((PMF.uniformOfFintype {permutation : Equiv Block Block //
+        Compatible assign permutation}).bind fun permutation =>
+          continuation (permutation.1 input) permutation.1) =
+      (PMF.uniformOfFintype ({permutation : Equiv Block Block //
+            Compatible (Function.update assign input (some base.1)) permutation} ×
+          {value : Block // value ∉ pinnedRange assign})).bind fun pair =>
+        continuation pair.2.1 (pair.1.1.trans (Equiv.swap base.1 pair.2.1)) := by
+    rw [← transported]
+    refine congrArg (PMF.bind _) (funext fun permutation => ?_)
+    rw [compatibleSplit_snd, compatibleSplit_fst, trans_swap_trans_swap]
+  have product := uniformOfFintype_bind_prod
+    (Left := {permutation : Equiv Block Block //
+      Compatible (Function.update assign input (some base.1)) permutation})
+    (Right := {value : Block // value ∉ pinnedRange assign})
+    (fun permutation value =>
+      continuation value.1 (permutation.1.trans (Equiv.swap base.1 value.1)))
+  rw [split, ← product, PMF.bind_comm]
+  refine congrArg (PMF.bind _) (funext fun value => ?_)
+  exact uniformOfFintype_bind_of_equiv (repin assign input base.1 value.1 fresh base.2 value.2)
+    (fun permutation => continuation value.1 permutation.1)
 
 end
 
