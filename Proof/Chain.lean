@@ -35,28 +35,31 @@ theorem advantage_bind_le_bad {Sample : Type} (first second : PMF Sample)
     {true} agreeLaw agreeContinuation
   rwa [PMF.toOuterMeasure_apply_singleton, PMF.toOuterMeasure_apply_singleton] at base
 
-/-- An identical-until-bad hop whose bad event depends on the outcome as well as on the
-sample. Each hop of the chain swaps a stage's oracle view, and the queries that see the
-swap are the entries of the run's own log, so the bad event is not a property of the
-sample alone. It costs the mass of the bad event under the joint law of the second game. -/
-theorem advantage_bind_map_le_jointBad {Sample Outcome : Type} (law : PMF Sample)
-    (first second : Sample → PMF Outcome) (project : Outcome → Bool)
+/-- An identical-until-bad hop whose bad event depends on the outcome of the differing
+step as well as on the sample. Each hop of the chain swaps one stage's oracle view, and
+the queries that see the swap are the entries of that stage's own log, so the bad event is
+not a property of the sample alone. The hop costs the mass of the bad event under the
+joint law of the second game. -/
+theorem advantage_bind_le_jointBad {Sample Outcome : Type} (law : PMF Sample)
+    (first second : Sample → PMF Outcome) (continuation : Sample → Outcome → PMF Bool)
     (bad : Set (Sample × Outcome))
     (agree : ∀ pair ∉ bad, first pair.1 pair.2 = second pair.1 pair.2) :
-    advantage ((law.bind first).map project) ((law.bind second).map project) ≤
+    advantage (law.bind fun sample => (first sample).bind (continuation sample))
+        (law.bind fun sample => (second sample).bind (continuation sample)) ≤
       ((jointLaw law second).toOuterMeasure bad).toReal := by
-  have joint := Probability.identical_until_bad (jointLaw law first) (jointLaw law second) bad
-    (Prod.snd ⁻¹' (project ⁻¹' ({true} : Set Bool))) (by
-      rintro ⟨sample, outcome⟩ good
-      rw [jointLaw_apply, jointLaw_apply, agree (sample, outcome) good])
-  have expand (continuation : Sample → PMF Outcome) :
-      ((law.bind continuation).map project) true =
-        (jointLaw law continuation).toOuterMeasure
-          (Prod.snd ⁻¹' (project ⁻¹' ({true} : Set Bool))) := by
-    rw [← PMF.toOuterMeasure_apply_singleton, PMF.toOuterMeasure_map_apply,
-      ← jointLaw_map_snd law continuation, PMF.toOuterMeasure_map_apply]
-  rw [advantage_eq, expand first, expand second]
-  exact joint
+  have factor (step : Sample → PMF Outcome) :
+      (law.bind fun sample => (step sample).bind (continuation sample)) =
+        (jointLaw law step).bind fun pair => continuation pair.1 pair.2 := by
+    unfold jointLaw
+    rw [PMF.bind_bind]
+    refine congrArg (PMF.bind law) (funext fun sample => ?_)
+    rw [PMF.bind_map]
+    rfl
+  rw [factor first, factor second]
+  refine advantage_bind_le_bad (jointLaw law first) (jointLaw law second) _ _ bad ?_
+    fun _ _ => rfl
+  rintro ⟨sample, outcome⟩ good
+  rw [jointLaw_apply, jointLaw_apply, agree (sample, outcome) good]
 
 /-- Swapping the sampled law of a game costs the total difference of the two laws. -/
 theorem advantage_bind_le_totalDifference {Sample : Type} [Fintype Sample]

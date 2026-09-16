@@ -291,6 +291,186 @@ theorem hybridGame_eq_fresh [FieldCertificate] [GroupCertificate] (adversary : A
     curveGarble_programFamily, freshHash_freshOfSecrets, freshPad_freshOfSecrets,
     programFamily_eq_programIndices]
 
+/-! ### The bad queries of an oracle hop -/
+
+/-- The label coordinate of a query's own gate: the coordinate and bit position of its
+index, and the label value that index's slot reads. -/
+def queryLabelIndex (query : Query) : Option (Bool × Fin coordinateBitCount × Bool) :=
+  (queryIndex query).map fun index =>
+    (adaptorCoordinate index.adaptor, index.position, slotBit index.slot)
+
+/-- The label values at which one query sees a programming of its own index to the given
+fresh value. -/
+def usedHidden (oracle : PermutationOracle FixedKeyIndex Block)
+    (values : FixedKeyIndex → Block) : Query → Finset Block
+  | .fixedForward index input => forwardHidden (oracle.permutation index) (values index) input
+  | .fixedInverse index output => inverseHidden (oracle.permutation index) (values index) output
+  | _ => ∅
+
+theorem usedHidden_card (oracle : PermutationOracle FixedKeyIndex Block)
+    (values : FixedKeyIndex → Block) (query : Query) :
+    (usedHidden oracle values query).card ≤ 2 := by
+  cases query with
+  | fixedForward index input => exact forwardHidden_card _ _ _
+  | fixedInverse index output => exact inverseHidden_card _ _ _
+  | encForward _ _ => simp [usedHidden]
+  | encInverse _ _ => simp [usedHidden]
+  | hash _ => simp [usedHidden]
+
+/-- A query is bad for a family programming when the label of its own gate is one of the
+hidden label values of the query. -/
+def UsedBad (oracle : PermutationOracle FixedKeyIndex Block) (values : FixedKeyIndex → Block)
+    (key : InputMacKey) (query : Query) : Prop :=
+  ∃ coordinate position value, queryLabelIndex query = some (coordinate, position, value) ∧
+    keyLabel key coordinate position value ∈ usedHidden oracle values query
+
+/-- The label garbling reads one index at is that index's own key label. -/
+theorem usedLabel_eq_keyLabel (key : InputMacKey) (index : FixedKeyIndex) :
+    usedLabel key index =
+      keyLabel key (adaptorCoordinate index.adaptor) index.position (slotBit index.slot) := by
+  obtain ⟨adaptor, position, slot⟩ := index
+  cases slot <;> simp [usedLabel, keyLabel, slotBit, gateKey_eq, BitAdaptor.encode]
+
+/-- Off its bad label values, a query cannot tell the family programming at the used
+labels from the unprogrammed oracle. -/
+theorem publicAnswer_usedPrograms (oracle : PermutationOracle FixedKeyIndex Block)
+    (rest : PermutationOracle Garbling.EncIndex Block × (BaseField → Block × Block))
+    (key : InputMacKey) (values : FixedKeyIndex → Block) (query : Query)
+    (good : ¬ UsedBad oracle values key query) :
+    publicAnswer (programIndices (usedPrograms key values) oracle, rest) query =
+      publicAnswer (oracle, rest) query := by
+  cases query with
+  | fixedForward index input =>
+    have missing : usedLabel key index ∉
+        forwardHidden (oracle.permutation index) (values index) input := by
+      rw [usedLabel_eq_keyLabel]
+      intro member
+      exact good ⟨adaptorCoordinate index.adaptor, index.position, slotBit index.slot, rfl, member⟩
+    show (programIndices (usedPrograms key values) oracle).permutation index input =
+      oracle.permutation index input
+    rw [programIndices_eq_programmed (usedPrograms key values) oracle index (usedLabel key index)
+      (values index ^^^ usedLabel key index) rfl]
+    exact programmed_apply_of_not_mem _ _ _ _ missing
+  | fixedInverse index output =>
+    have missing : usedLabel key index ∉
+        inverseHidden (oracle.permutation index) (values index) output := by
+      rw [usedLabel_eq_keyLabel]
+      intro member
+      exact good ⟨adaptorCoordinate index.adaptor, index.position, slotBit index.slot, rfl, member⟩
+    show ((programIndices (usedPrograms key values) oracle).permutation index).symm output =
+      (oracle.permutation index).symm output
+    rw [programIndices_eq_programmed (usedPrograms key values) oracle index (usedLabel key index)
+      (values index ^^^ usedLabel key index) rfl]
+    exact programmed_symm_apply_of_not_mem _ _ _ _ missing
+  | encForward _ _ => rfl
+  | encInverse _ _ => rfl
+  | hash _ => rfl
+
+/-! ### The first oracle hop: the first stage moves to the unprogrammed view -/
+
+/-- The key-free data of the H side: the unprogrammed view, the public value, the carrier,
+and the fresh value of every index. -/
+abbrev ChainData := View × Garbling.Public × NonZeroBase × (FixedKeyIndex → Block)
+
+/-- A sample built from the label key and the key-free data splits back into its two
+binds. -/
+theorem bind_pairLaw {Data Outcome : Type} (data : PMF Data)
+    (continuation : InputMacKey × Data → PMF Outcome) :
+    (((PMF.uniformOfFintype InputMacKey).bind fun key =>
+        data.map fun datum => (key, datum)).bind continuation) =
+      (PMF.uniformOfFintype InputMacKey).bind fun key => data.bind fun datum =>
+        continuation (key, datum) := by
+  rw [PMF.bind_bind]
+  refine congrArg (PMF.bind _) (funext fun key => ?_)
+  rw [PMF.bind_map]
+  rfl
+
+/-- The bad event of an oracle hop: some entry of the stage's log is bad. -/
+def firstBad (adversary : Adversary) : Set ((InputMacKey × ChainData) ×
+    ((AffineInput × adversary.State) × List Query)) :=
+  {pair | ∃ query ∈ pair.2.2, UsedBad pair.1.2.1.1 pair.1.2.2.2.2 pair.1.1 query}
+
+/-- Two blocks of a query budget over `2 ^ 128`, as a real number. -/
+theorem toReal_two_budget (budget : Nat) :
+    (((2 : ENNReal) * (budget : ENNReal) / 2 ^ 128)).toReal = 2 * (budget : ℝ) / 2 ^ 128 := by
+  rw [ENNReal.toReal_div, ENNReal.toReal_mul, ENNReal.toReal_pow, ENNReal.toReal_ofNat,
+    ENNReal.toReal_natCast]
+
+/-- Hop A. Replacing the programmed first-stage view by the unprogrammed one is invisible
+until a logged query hits one of the two hidden label values of its own gate; the label is
+independent of the unprogrammed run, so that costs `2 q₁ / 2 ^ 128`. -/
+theorem advantage_firstView_le (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (data : PMF ChainData)
+    (continuation : InputMacKey → ChainData →
+      (AffineInput × adversary.State) × List Query → PMF Bool) :
+    advantage
+        ((PMF.uniformOfFintype InputMacKey).bind fun key => data.bind fun datum =>
+          (loggedFirstStage adversary parameter auxiliary datum.2.1
+              (programIndices (usedPrograms key datum.2.2.2) datum.1.1, datum.1.2)).bind
+            (continuation key datum))
+        ((PMF.uniformOfFintype InputMacKey).bind fun key => data.bind fun datum =>
+          (loggedFirstStage adversary parameter auxiliary datum.2.1 datum.1).bind
+            (continuation key datum)) ≤
+      2 * (adversary.firstQueryBudget parameter : ℝ) / 2 ^ 128 := by
+  rw [← bind_pairLaw data fun sample =>
+      (loggedFirstStage adversary parameter auxiliary sample.2.2.1
+        (programIndices (usedPrograms sample.1 sample.2.2.2.2) sample.2.1.1,
+          sample.2.1.2)).bind (continuation sample.1 sample.2),
+    ← bind_pairLaw data fun sample =>
+      (loggedFirstStage adversary parameter auxiliary sample.2.2.1 sample.2.1).bind
+        (continuation sample.1 sample.2)]
+  refine le_trans (advantage_bind_le_jointBad
+    ((PMF.uniformOfFintype InputMacKey).bind fun key => data.map fun datum => (key, datum))
+    (fun sample => loggedFirstStage adversary parameter auxiliary sample.2.2.1
+      (programIndices (usedPrograms sample.1 sample.2.2.2.2) sample.2.1.1, sample.2.1.2))
+    (fun sample => loggedFirstStage adversary parameter auxiliary sample.2.2.1 sample.2.1)
+    (fun sample => continuation sample.1 sample.2) (firstBad adversary) ?_) ?_
+  · rintro ⟨⟨key, datum⟩, result, log⟩ good
+    have goodQuery : ∀ query ∈ log, ¬ UsedBad datum.1.1 datum.2.2.2 key query := by
+      intro query member bad
+      exact good ⟨query, member, bad⟩
+    show (((adversary.chooseInput parameter datum.2.1 auxiliary).run idealOracle
+        (firstState (programIndices (usedPrograms key datum.2.2.2) datum.1.1, datum.1.2)
+          datum.2.1.1 ⟨1, one_ne_zero⟩ witnessTape.inputMacKey)).map loggedOutcome) (result, log) =
+      (((adversary.chooseInput parameter datum.2.1 auxiliary).run idealOracle
+        (firstState datum.1 datum.2.1.1 ⟨1, one_ne_zero⟩ witnessTape.inputMacKey)).map
+          loggedOutcome) (result, log)
+    exact run_idealOracle_agree (adversary.chooseInput parameter datum.2.1 auxiliary)
+      (UsedBad datum.1.1 datum.2.2.2 key)
+      (firstState (programIndices (usedPrograms key datum.2.2.2) datum.1.1, datum.1.2)
+        datum.2.1.1 ⟨1, one_ne_zero⟩ witnessTape.inputMacKey)
+      (firstState datum.1 datum.2.1.1 ⟨1, one_ne_zero⟩ witnessTape.inputMacKey) rfl
+      (fun query notBad =>
+        publicAnswer_usedPrograms datum.1.1 datum.1.2 key datum.2.2.2 query notBad)
+      result log goodQuery
+  · have badLe := firstStage_hidden_le data Prod.fst (fun datum => datum.2.1)
+      (fun datum => datum.2.1.1) (fun datum => datum.2.2.1) adversary parameter auxiliary
+      queryLabelIndex (fun datum => usedHidden datum.1.1 datum.2.2.2) 2
+      (fun datum query => usedHidden_card _ _ query)
+    have transport :
+        (((PMF.uniformOfFintype InputMacKey).bind fun key => data.bind fun datum =>
+            ((adversary.chooseInput parameter datum.2.1 auxiliary).run idealOracle
+              (firstState datum.1 datum.2.1.1 datum.2.2.1 key)).map
+                fun selected => (key, datum, selected)).map
+          fun triple => ((triple.1, triple.2.1), loggedOutcome triple.2.2)) =
+        jointLaw ((PMF.uniformOfFintype InputMacKey).bind fun key =>
+            data.map fun datum => (key, datum))
+          fun sample => loggedFirstStage adversary parameter auxiliary sample.2.2.1 sample.2.1 := by
+      unfold jointLaw
+      rw [bind_pairLaw data fun sample =>
+        (loggedFirstStage adversary parameter auxiliary sample.2.2.1 sample.2.1).map
+          (Prod.mk sample), PMF.map_bind]
+      refine congrArg (PMF.bind _) (funext fun key => ?_)
+      rw [PMF.map_bind]
+      refine congrArg (PMF.bind data) (funext fun datum => ?_)
+      rw [← map_loggedOutcome_firstState adversary parameter auxiliary datum.2.1
+        datum.1 datum.2.1.1 datum.2.2.1 key, PMF.map_comp, PMF.map_comp]
+      rfl
+    rw [← transport, PMF.toOuterMeasure_map_apply]
+    refine le_trans (ENNReal.toReal_mono (by finiteness) (le_trans (le_of_eq ?_) badLe)) ?_
+    · rfl
+    · exact le_of_eq (toReal_two_budget _)
+
 end
 
 end Kriterion.ArgoMAC.Security
