@@ -1111,6 +1111,134 @@ theorem familyLaw_double {Result : Type} (assigns : FamilyAssignment)
     (fun index permutation => programSlot combined index permutation)
     (fun permutations => continuation ⟨permutations⟩) pointwise
 
+/-! ### The charge of the transcript conditions, over the whole family -/
+
+/-- The chunk a slot reads: the programmed range with the label removed. -/
+def slotChunk (slot : FixedKeySlot) (hash : BitVec 384) (pad : BitAdaptor.Ciphertext) : Block :=
+  match slot with
+  | .hash chunk => hash.extractLsb' (128 * chunk.val) 128
+  | .pad chunk => pad.extractLsb' (128 * chunk.val) 128
+
+/-- Every programmed range is its chunk exclusive-ored with the label. -/
+theorem slotRange_eq_slotChunk (slot : FixedKeySlot) (hash : BitVec 384)
+    (pad : BitAdaptor.Ciphertext) (label : Block) :
+    slotRange slot hash pad label = slotChunk slot hash pad ^^^ label := by
+  cases slot with
+  | hash chunk => rfl
+  | pad chunk => rfl
+
+/-- The label values at which some index's transcript blocks the double programming: the
+inputs that index has pinned, and, for each of its two chunk values, the label that would
+put one of its pinned values at a programmed range.
+
+The union runs over all indices, but only the indices the steering actually programs
+contribute, and the sum of their pinned counts is `familyPinnedCount` -- which is what
+`lazyFamilyRun_pinnedCount` bounds by the first stage's budget. This is exactly the
+accounting the single-index tool could not see: it would have charged `familyPinnedCount`
+once per programmed index. -/
+def familyLabelHidden (assigns : FamilyAssignment)
+    (honestChunk steeredChunk : FixedKeyIndex → Block) : Finset Block :=
+  Finset.univ.biUnion fun index =>
+    transcriptHidden (assigns index) (honestChunk index) (steeredChunk index)
+
+/-- A family of transcripts pinning `k` points in total blocks at most `3 k` labels. -/
+theorem familyLabelHidden_card (assigns : FamilyAssignment)
+    (injective : FamilyInjective assigns) (honestChunk steeredChunk : FixedKeyIndex → Block) :
+    (familyLabelHidden assigns honestChunk steeredChunk).card ≤
+      3 * familyPinnedCount assigns := by
+  refine le_trans (Finset.card_biUnion_le) ?_
+  refine le_trans (Finset.sum_le_sum fun index _ =>
+    transcriptHidden_card (assigns index) (injective index) (honestChunk index)
+      (steeredChunk index)) ?_
+  rw [familyPinnedCount, Finset.mul_sum]
+
+set_option maxRecDepth 8000 in
+/-- The charge of the steering hop, in one hop over the whole family: the selected label is
+a uniform block the first stage never reads, so it blocks the double programming at some
+index with mass at most three times the **total** number of points the first stage
+pinned. -/
+theorem uniform_keyLabel_familyHidden_le (assigns : FamilyAssignment)
+    (injective : FamilyInjective assigns) (budget : Nat)
+    (small : familyPinnedCount assigns ≤ budget)
+    (honestChunk steeredChunk : FixedKeyIndex → Block) (coordinate : Bool)
+    (position : Fin coordinateBitCount) (value : Bool) :
+    (PMF.uniformOfFintype InputMacKey).toOuterMeasure
+        {key | ∃ index : FixedKeyIndex,
+          keyLabel key coordinate position value ∈ pinnedDomain (assigns index) ∨
+            honestChunk index ^^^ keyLabel key coordinate position value ∈
+              pinnedRange (assigns index) ∨
+            steeredChunk index ^^^ keyLabel key coordinate position value ∈
+              pinnedRange (assigns index)} ≤
+      3 * budget / 2 ^ 128 := by
+  have subset : {key : InputMacKey | ∃ index : FixedKeyIndex,
+        keyLabel key coordinate position value ∈ pinnedDomain (assigns index) ∨
+          honestChunk index ^^^ keyLabel key coordinate position value ∈
+            pinnedRange (assigns index) ∨
+          steeredChunk index ^^^ keyLabel key coordinate position value ∈
+            pinnedRange (assigns index)} ⊆
+      {key | keyLabel key coordinate position value ∈
+        familyLabelHidden assigns honestChunk steeredChunk} := fun key member => by
+    obtain ⟨index, blocked⟩ := member
+    exact Finset.mem_biUnion.mpr ⟨index, Finset.mem_univ index,
+      mem_transcriptHidden (assigns index) (honestChunk index) (steeredChunk index) _ blocked⟩
+  refine le_trans (MeasureTheory.measure_mono subset) ?_
+  rw [uniform_keyLabel_mem coordinate position value]
+  have cast : ((3 * budget : Nat) : ENNReal) = 3 * (budget : ENNReal) := by push_cast; ring
+  rw [← cast]
+  refine ENNReal.div_le_div_right (Nat.cast_le.mpr ?_) _
+  exact le_trans (familyLabelHidden_card assigns injective honestChunk steeredChunk)
+    (Nat.mul_le_mul_left 3 small)
+
+/-- The bad event of the steering hop: at some index the steering reprograms, the
+transcript of that index has already queried the selected label or already used one of the
+two ranges. Its negation is exactly the `good` hypothesis of `familyLaw_double`. -/
+def steeringBlocked (assigns : FamilyAssignment) (honest steered : Programs) : Prop :=
+  ∃ index label first second, honest index = some (label, first) ∧
+    steered index = some (label, second) ∧
+    (label ∈ pinnedDomain (assigns index) ∨ first ∈ pinnedRange (assigns index) ∨
+      second ∈ pinnedRange (assigns index))
+
+/-- The `good` hypothesis of `familyLaw_double`, from the negation of the bad event. -/
+theorem good_of_not_steeringBlocked (assigns : FamilyAssignment) (honest steered : Programs)
+    (good : ¬ steeringBlocked assigns honest steered) :
+    ∀ index label first second, honest index = some (label, first) →
+      steered index = some (label, second) →
+      assigns index label = none ∧ first ∉ pinnedRange (assigns index) ∧
+        second ∉ pinnedRange (assigns index) := by
+  intro index label first second honestAt steeredAt
+  refine ⟨?_, fun used => good ⟨index, label, first, second, honestAt, steeredAt, Or.inr
+      (Or.inl used)⟩,
+    fun used => good ⟨index, label, first, second, honestAt, steeredAt, Or.inr (Or.inr used)⟩⟩
+  cases pinned : assigns index label with
+  | none => rfl
+  | some value =>
+    exact absurd ⟨index, label, first, second, honestAt, steeredAt,
+      Or.inl (mem_pinnedDomain pinned)⟩ good
+
+/-- The bad event is a condition on the selected label alone: both programmed ranges are
+their chunk exclusive-ored with the label, so each of the three clauses names one label
+value per pinned point. -/
+theorem mem_familyLabelHidden_of_blocked (assigns : FamilyAssignment)
+    (honest steered : Programs) (label : Block)
+    (honestChunk steeredChunk : FixedKeyIndex → Block)
+    (honestForm : ∀ index first, honest index = some (label, first) →
+      first = honestChunk index ^^^ label)
+    (steeredForm : ∀ index second, steered index = some (label, second) →
+      second = steeredChunk index ^^^ label)
+    (blocked : steeringBlocked assigns honest steered)
+    (sameLabel : ∀ index other first, honest index = some (other, first) → other = label) :
+    ∃ index : FixedKeyIndex, label ∈ pinnedDomain (assigns index) ∨
+      honestChunk index ^^^ label ∈ pinnedRange (assigns index) ∨
+      steeredChunk index ^^^ label ∈ pinnedRange (assigns index) := by
+  obtain ⟨index, other, first, second, honestAt, steeredAt, hit⟩ := blocked
+  have otherEq : other = label := sameLabel index other first honestAt
+  subst otherEq
+  refine ⟨index, ?_⟩
+  rcases hit with pinned | usedFirst | usedSecond
+  · exact Or.inl pinned
+  · exact Or.inr (Or.inl (honestForm index first honestAt ▸ usedFirst))
+  · exact Or.inr (Or.inr (steeredForm index second steeredAt ▸ usedSecond))
+
 end
 
 end Kriterion.ArgoMAC.Security
