@@ -30,3 +30,4 @@ import Proof.Chunk
 import Proof.Lazy
 import Proof.Erased
 import Proof.Assembly
+import Proof.Shifted
