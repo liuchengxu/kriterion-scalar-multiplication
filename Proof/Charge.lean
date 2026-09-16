@@ -406,6 +406,41 @@ theorem hybridStageTwo_doubled_agree (adversary : Adversary) (parameter : Nat)
   exact publicAnswer_steeringDouble key input outputs rows fibers wanted hash view.2 view.1 query
     goodQuery
 
+/-! ### The freshness half of the bad event -/
+
+/-- The queries that block the steering's own programming.
+
+The simulator programs a request only when none of the four answers it changes has been
+logged (`ProgramRequest.Fresh`). Each of the four is a condition on one query at the
+request's **own** index: a forward query at the request's domain or at the preimage of its
+range, an inverse query at its range or at the current image of its domain. Keying the
+predicate to the query's index this way is what lets the union bound charge one log entry
+once rather than once per steering slot. -/
+def freshnessHidden (view : PermutationOracle FixedKeyIndex Block)
+    (requests : List ProgramRequest) : Query → Prop
+  | .fixedForward index input =>
+      ∃ request ∈ requests, request.index = index ∧
+        (input = request.domain ∨ view.permutation index input = request.range)
+  | .fixedInverse index value =>
+      ∃ request ∈ requests, request.index = index ∧
+        (value = request.range ∨ value = view.permutation index request.domain)
+  | _ => False
+
+/-- Off the blocking queries, every request of the steering is fresh. This is the
+identical-until-bad input for the freshness half of the steering hop's bad event: it turns
+the abstract `fresh` hypothesis of `selectedSimulatedStageTwo_double` into a condition on
+the entries of the first stage's log. -/
+theorem fresh_of_notMem_freshnessHidden (view : PermutationOracle FixedKeyIndex Block)
+    (requests : List ProgramRequest) (log : List Query)
+    (good : ∀ query ∈ log, ¬ freshnessHidden view requests query)
+    (request : ProgramRequest) (member : request ∈ requests) :
+    request.Fresh log view := by
+  refine ⟨fun logged => good _ logged ⟨request, member, rfl, Or.inl rfl⟩,
+    fun logged => good _ logged ⟨request, member, rfl, Or.inr ?_⟩,
+    fun logged => good _ logged ⟨request, member, rfl, Or.inl rfl⟩,
+    fun logged => good _ logged ⟨request, member, rfl, Or.inr rfl⟩⟩
+  exact Equiv.apply_symm_apply _ _
+
 end
 
 end Kriterion.ArgoMAC.Security
