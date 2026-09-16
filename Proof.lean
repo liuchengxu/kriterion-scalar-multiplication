@@ -8,3 +8,4 @@ import Proof.Reference
 import Proof.Logged
 import Proof.Programming
 import Proof.Uniform
+import Proof.Deferred
