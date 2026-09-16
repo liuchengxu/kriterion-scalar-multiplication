@@ -1019,10 +1019,16 @@ def hybridRaw (datum : HybridDatum) : Coordinates :=
   digestedRaw (hybridMask datum) (hybridR1 datum) (hybridR2 datum) (hybridDigests datum)
     (hybridPads datum)
 
+/-- The hybrid side's bridge key as a function of the carrier: the carrier divided by the
+scalar. This is the bridge key of the reference game the hybrid side ends at. -/
+def hybridBridge [FieldCertificate] (scalar : NonZeroScalar) (carrier : NonZeroBase) :
+    BaseField :=
+  ((mulScalar scalar).symm carrier).value
+
 /-- The bridge key of one sample: the carrier divided by the scalar. -/
 def hybridBridgeKey [FieldCertificate] (scalar : NonZeroScalar) (datum : HybridDatum) :
     BaseField :=
-  ((mulScalar scalar).symm (hybridCarrier datum)).value
+  hybridBridge scalar (hybridCarrier datum)
 
 /-- The public value of one sample. It does not depend on the label key. -/
 def hybridCircuit [FieldCertificate] (scalar : NonZeroScalar) (datum : HybridDatum) :

@@ -82,43 +82,45 @@ def referenceRaw (datum : ReferenceDatum) (mask : BaseField) (hash : GateValues 
     Coordinates :=
   ⟨mask, referenceR1 datum, referenceR2 datum, hash, referencePads datum⟩
 
-/-- The public value of one sample: the reference table of the carrier's bridge key. -/
-def referenceCircuit [FieldCertificate] (scalar : NonZeroScalar) (datum : ReferenceDatum)
+/-- The public value of one sample: the reference table of the sample's bridge key. The
+bridge key is a function of the carrier, so that one definition serves both sides of the
+chain: the hybrid side takes `carrier / scalar`, the simulated side the constant `u`. -/
+def referenceCircuit (bridge : NonZeroBase → BaseField) (datum : ReferenceDatum)
     (mask : BaseField) (hash : GateValues BaseField) : Garbling.Public :=
-  (Coordinates.table (((mulScalar scalar).symm (referenceCarrier datum)).value)
-      (referenceKey datum) (referenceRaw datum mask hash),
+  (Coordinates.table (bridge (referenceCarrier datum)) (referenceKey datum)
+      (referenceRaw datum mask hash),
     carrierBits (referenceCarrier datum))
 
 /-! ### The two bodies of step 2 -/
 
 /-- The reference-shaped round with the fiber family already fixed before the first stage:
 this is what the two oracle hops left. -/
-def digestedBody [FieldCertificate] (scalar : NonZeroScalar) (adversary : Adversary)
+def digestedBody (bridge : NonZeroBase → BaseField) (adversary : Adversary)
     (parameter : Nat) (auxiliary : Unit) (datum : ReferenceDatum) (mask : BaseField)
     (hash : GateValues BaseField) (fibers : GateValues (BitVec 384)) : PMF Bool :=
-  (loggedFirstStage adversary parameter auxiliary (referenceCircuit scalar datum mask hash)
+  (loggedFirstStage adversary parameter auxiliary (referenceCircuit bridge datum mask hash)
       (referenceView datum)).bind fun outcome =>
-    (selectedStageTwo adversary parameter auxiliary (referenceCircuit scalar datum mask hash)
+    (selectedStageTwo adversary parameter auxiliary (referenceCircuit bridge datum mask hash)
       outcome.1.1 outcome.1.2
       (encodeCoordinates outcome.1.1 (referenceRaw datum mask hash)).hash fibers
       (stageTwoState (referenceView datum) outcome.2
-        (referenceCircuit scalar datum mask hash).1 (referenceCarrier datum)
+        (referenceCircuit bridge datum mask hash).1 (referenceCarrier datum)
         (referenceKey datum))).map Prod.fst
 
 /-- The reference-shaped round with the fiber family sampled after the input is chosen, at
 the selected outputs: this is the reference game. -/
-def fiberedBody [FieldCertificate] (scalar : NonZeroScalar) (adversary : Adversary)
+def fiberedBody (bridge : NonZeroBase → BaseField) (adversary : Adversary)
     (parameter : Nat) (auxiliary : Unit) (datum : ReferenceDatum) (mask : BaseField)
     (hash : GateValues BaseField) : PMF Bool :=
-  (loggedFirstStage adversary parameter auxiliary (referenceCircuit scalar datum mask hash)
+  (loggedFirstStage adversary parameter auxiliary (referenceCircuit bridge datum mask hash)
       (referenceView datum)).bind fun outcome =>
     (uniformHashFibers
         (encodeCoordinates outcome.1.1 (referenceRaw datum mask hash)).hash).bind fun fibers =>
-      (selectedStageTwo adversary parameter auxiliary (referenceCircuit scalar datum mask hash)
+      (selectedStageTwo adversary parameter auxiliary (referenceCircuit bridge datum mask hash)
         outcome.1.1 outcome.1.2
         (encodeCoordinates outcome.1.1 (referenceRaw datum mask hash)).hash fibers
         (stageTwoState (referenceView datum) outcome.2
-          (referenceCircuit scalar datum mask hash).1 (referenceCarrier datum)
+          (referenceCircuit bridge datum mask hash).1 (referenceCarrier datum)
           (referenceKey datum))).map Prod.fst
 
 /-! ### The hybrid side in the shape of step 2 -/
@@ -140,18 +142,19 @@ the label key, so the key the second stage uses may be read off the sample. -/
 theorem hybridCircuit_eq_referenceCircuit [FieldCertificate] (scalar : NonZeroScalar)
     (key : InputMacKey) (datum : HybridDatum) :
     hybridCircuit scalar datum =
-      referenceCircuit scalar (referenceOf key datum) (hybridMask datum)
+      referenceCircuit (hybridBridge scalar)
+        (referenceOf key datum) (hybridMask datum)
         (digestField (hybridDigests datum)) :=
   congrArg (fun table => (table, carrierBits (hybridCarrier datum)))
     (Coordinates.table_key _ _ _ _)
 
 /-- The game the two oracle hops left, with the mask and the digests floated out. -/
-def digestedGame [FieldCertificate] (scalar : NonZeroScalar) (adversary : Adversary)
+def digestedGame (bridge : NonZeroBase → BaseField) (adversary : Adversary)
     (parameter : Nat) (auxiliary : Unit) : PMF Bool :=
   (PMF.uniformOfFintype ReferenceDatum).bind fun datum =>
     ((PMF.uniformOfFintype NonZeroBase).map NonZeroBase.value).bind fun mask =>
       (PMF.uniformOfFintype (GateValues (BitVec 384))).bind fun digests =>
-        digestedBody scalar adversary parameter auxiliary datum mask (digestField digests) digests
+        digestedBody bridge adversary parameter auxiliary datum mask (digestField digests) digests
 
 /-- Floating the mask and the digests out of the hybrid side's sample. -/
 def digestedSampleEquiv :
@@ -172,7 +175,7 @@ the sample so that step 2 can replace them. -/
 theorem digestedReference_eq [FieldCertificate] (scalar : NonZeroScalar) (adversary : Adversary)
     (parameter : Nat) (auxiliary : Unit) :
     digestedReference scalar adversary parameter auxiliary =
-      digestedGame scalar adversary parameter auxiliary := by
+      digestedGame (hybridBridge scalar) adversary parameter auxiliary := by
   have body : ∀ (key : InputMacKey) (datum : HybridDatum),
       ((loggedFirstStage adversary parameter auxiliary (hybridCircuit scalar datum)
           (hybridView datum)).bind fun outcome =>
@@ -181,14 +184,15 @@ theorem digestedReference_eq [FieldCertificate] (scalar : NonZeroScalar) (advers
           (hybridDigests datum)
           (stageTwoState (hybridView datum) outcome.2 (hybridCircuit scalar datum).1
             (hybridCarrier datum) key)).map Prod.fst) =
-        digestedBody scalar adversary parameter auxiliary (referenceOf key datum)
+        digestedBody (hybridBridge scalar) adversary parameter auxiliary (referenceOf key datum)
           (hybridMask datum) (digestField (hybridDigests datum)) (hybridDigests datum) := by
     intro key datum
     rw [hybridCircuit_eq_referenceCircuit scalar key datum]
     rfl
   have left : digestedReference scalar adversary parameter auxiliary =
       (PMF.uniformOfFintype (InputMacKey × HybridDatum)).bind fun sample =>
-        digestedBody scalar adversary parameter auxiliary (referenceOf sample.1 sample.2)
+        digestedBody (hybridBridge scalar) adversary parameter auxiliary
+          (referenceOf sample.1 sample.2)
           (hybridMask sample.2) (digestField (hybridDigests sample.2))
           (hybridDigests sample.2) := by
     unfold digestedReference
@@ -204,27 +208,27 @@ theorem digestedReference_eq [FieldCertificate] (scalar : NonZeroScalar) (advers
                 (hybridCarrier datum) key)).map Prod.fst) =
         ((PMF.uniformOfFintype InputMacKey).bind fun key =>
           (PMF.uniformOfFintype HybridDatum).bind fun datum =>
-            digestedBody scalar adversary parameter auxiliary (referenceOf key datum)
+            digestedBody (hybridBridge scalar) adversary parameter auxiliary (referenceOf key datum)
               (hybridMask datum) (digestField (hybridDigests datum)) (hybridDigests datum)) from
       congrArg (PMF.bind _) (funext fun key =>
         congrArg (PMF.bind _) (funext fun datum => body key datum))]
     exact uniformOfFintype_bind_prod fun key datum =>
-      digestedBody scalar adversary parameter auxiliary (referenceOf key datum)
+      digestedBody (hybridBridge scalar) adversary parameter auxiliary (referenceOf key datum)
         (hybridMask datum) (digestField (hybridDigests datum)) (hybridDigests datum)
-  have right : digestedGame scalar adversary parameter auxiliary =
+  have right : digestedGame (hybridBridge scalar) adversary parameter auxiliary =
       (PMF.uniformOfFintype (ReferenceDatum × NonZeroBase ×
         GateValues (BitVec 384))).bind fun sample =>
-          digestedBody scalar adversary parameter auxiliary sample.1 sample.2.1.value
-            (digestField sample.2.2) sample.2.2 := by
+          digestedBody (hybridBridge scalar) adversary parameter auxiliary sample.1
+            sample.2.1.value (digestField sample.2.2) sample.2.2 := by
     unfold digestedGame
     have masked : ∀ datum : ReferenceDatum,
         (((PMF.uniformOfFintype NonZeroBase).map NonZeroBase.value).bind fun mask =>
             (PMF.uniformOfFintype (GateValues (BitVec 384))).bind fun digests =>
-              digestedBody scalar adversary parameter auxiliary datum mask
+              digestedBody (hybridBridge scalar) adversary parameter auxiliary datum mask
                 (digestField digests) digests) =
           (PMF.uniformOfFintype NonZeroBase).bind fun mask =>
             (PMF.uniformOfFintype (GateValues (BitVec 384))).bind fun digests =>
-              digestedBody scalar adversary parameter auxiliary datum mask.value
+              digestedBody (hybridBridge scalar) adversary parameter auxiliary datum mask.value
                 (digestField digests) digests := by
       intro datum
       rw [PMF.bind_map]
@@ -232,11 +236,11 @@ theorem digestedReference_eq [FieldCertificate] (scalar : NonZeroScalar) (advers
     rw [congrArg (PMF.bind _) (funext masked)]
     rw [congrArg (PMF.bind (PMF.uniformOfFintype ReferenceDatum)) (funext fun datum =>
       uniformOfFintype_bind_prod fun (mask : NonZeroBase) (digests : GateValues (BitVec 384)) =>
-        digestedBody scalar adversary parameter auxiliary datum mask.value
+        digestedBody (hybridBridge scalar) adversary parameter auxiliary datum mask.value
           (digestField digests) digests)]
     exact uniformOfFintype_bind_prod fun (datum : ReferenceDatum)
       (pair : NonZeroBase × GateValues (BitVec 384)) =>
-        digestedBody scalar adversary parameter auxiliary datum pair.1.value
+        digestedBody (hybridBridge scalar) adversary parameter auxiliary datum pair.1.value
           (digestField pair.2) pair.2
   rw [left, right, ← uniformOfFintype_bind_bijection digestedSampleEquiv]
   rfl
@@ -244,18 +248,18 @@ theorem digestedReference_eq [FieldCertificate] (scalar : NonZeroScalar) (advers
 /-! ### Step 2, first hop: the nonzero mask becomes a uniform field element -/
 
 /-- The game with the curve mask uniform over the whole field. -/
-def maskedGame [FieldCertificate] (scalar : NonZeroScalar) (adversary : Adversary)
+def maskedGame (bridge : NonZeroBase → BaseField) (adversary : Adversary)
     (parameter : Nat) (auxiliary : Unit) : PMF Bool :=
   (PMF.uniformOfFintype ReferenceDatum).bind fun datum =>
     (PMF.uniformOfFintype BaseField).bind fun mask =>
       (PMF.uniformOfFintype (GateValues (BitVec 384))).bind fun digests =>
-        digestedBody scalar adversary parameter auxiliary datum mask (digestField digests) digests
+        digestedBody bridge adversary parameter auxiliary datum mask (digestField digests) digests
 
 /-- Replacing the nonzero mask by a uniform field element costs `2 / p`. -/
-theorem advantage_digestedGame_maskedGame_le [FieldCertificate] (scalar : NonZeroScalar)
+theorem advantage_digestedGame_maskedGame_le (bridge : NonZeroBase → BaseField)
     (adversary : Adversary) (parameter : Nat) (auxiliary : Unit) :
-    advantage (digestedGame scalar adversary parameter auxiliary)
-        (maskedGame scalar adversary parameter auxiliary) ≤ 2 / (baseFieldModulus : ℝ) :=
+    advantage (digestedGame bridge adversary parameter auxiliary)
+        (maskedGame bridge adversary parameter auxiliary) ≤ 2 / (baseFieldModulus : ℝ) :=
   advantage_bind_le_of_le _ _ _ _ fun _ =>
     (advantage_bind_le_totalDifference _ _ _).trans mask_total_difference
 
@@ -263,19 +267,19 @@ theorem advantage_digestedGame_maskedGame_le [FieldCertificate] (scalar : NonZer
 
 /-- The game whose hash secrets are a uniform field element per gate, still read through a
 fiber of themselves. -/
-def fiberedDigestGame [FieldCertificate] (scalar : NonZeroScalar) (adversary : Adversary)
+def fiberedDigestGame (bridge : NonZeroBase → BaseField) (adversary : Adversary)
     (parameter : Nat) (auxiliary : Unit) : PMF Bool :=
   (PMF.uniformOfFintype ReferenceDatum).bind fun datum =>
     (PMF.uniformOfFintype BaseField).bind fun mask =>
       ((PMF.uniformOfFintype (GateValues BaseField)).bind uniformHashFibers).bind fun digests =>
-        digestedBody scalar adversary parameter auxiliary datum mask (digestField digests) digests
+        digestedBody bridge adversary parameter auxiliary datum mask (digestField digests) digests
 
 /-- Replacing the fresh digest of every gate by a uniform field element and a uniform fiber
 sample of it costs `1270 * p / 2 ^ 384`. -/
-theorem advantage_maskedGame_fiberedDigestGame_le [FieldCertificate] (scalar : NonZeroScalar)
+theorem advantage_maskedGame_fiberedDigestGame_le (bridge : NonZeroBase → BaseField)
     (adversary : Adversary) (parameter : Nat) (auxiliary : Unit) :
-    advantage (maskedGame scalar adversary parameter auxiliary)
-        (fiberedDigestGame scalar adversary parameter auxiliary) ≤
+    advantage (maskedGame bridge adversary parameter auxiliary)
+        (fiberedDigestGame bridge adversary parameter auxiliary) ≤
       1270 * ((baseFieldModulus : ℝ) / 2 ^ 384) := by
   refine advantage_bind_le_of_le _ _ _ _ fun _ => advantage_bind_le_of_le _ _ _ _ fun _ => ?_
   refine (advantage_bind_le_totalDifference _ _ _).trans ?_
@@ -319,30 +323,26 @@ theorem selectedPrograms_setGate (key : InputMacKey) (input : AffineInput)
       rw [if_neg (by simp), if_neg (by simp), setGate_apply, if_neg other]
   | pad chunk => rw [selectedPrograms_pad, selectedPrograms_pad]
 
-/-- The reference-shaped second stage never reads the fiber of a gate whose input bit is
-set. -/
-theorem selectedStageTwo_setGate (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
-    (circuit : Garbling.Public) (input : AffineInput) (advState : adversary.State)
-    (outputs : GateValues BaseField) (fibers : GateValues (BitVec 384)) (state : State)
-    (gate : Gate) (value : BitVec 384) (bit : inputBits input gate.1 gate.2 = true) :
-    selectedStageTwo adversary parameter auxiliary circuit input advState outputs
-        (setGate gate value fibers) state =
-      selectedStageTwo adversary parameter auxiliary circuit input advState outputs fibers
-        state := by
-  unfold selectedStageTwo programSelected
+/-- The second-stage state programmed at the selected labels never sees the fiber of a gate
+whose input bit is set. -/
+theorem programSelected_setGate (state : State) (input : AffineInput)
+    (outputs : GateValues BaseField) (fibers : GateValues (BitVec 384)) (gate : Gate)
+    (value : BitVec 384) (bit : inputBits input gate.1 gate.2 = true) :
+    programSelected state input outputs (setGate gate value fibers) =
+      programSelected state input outputs fibers := by
+  unfold programSelected
   rw [selectedPrograms_setGate state.inputMacKey input outputs (tableRow state.table) fibers gate
     value bit]
 
 /-- The reference game's fiber sample is taken at the selected outputs, which agree with the
 sampled hash secrets off the gates whose input bit is set. Those gates' fibers are read
-nowhere, so the two samples give the same game. -/
-theorem uniformHashFibers_selected (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
-    (circuit : Garbling.Public) (input : AffineInput) (advState : adversary.State)
-    (raw : Coordinates) (state : State)
+nowhere -- the second stage sees them only through `programSelected` -- so the two samples
+give the same game, whatever the second stage on the programmed state is. -/
+theorem uniformHashFibers_selected (input : AffineInput) (raw : Coordinates) (state : State)
+    (programmedStage : State → PMF (Bool × List Query))
     (continuation : GateValues (BitVec 384) → PMF (Bool × List Query))
     (body : ∀ fibers, continuation fibers =
-      selectedStageTwo adversary parameter auxiliary circuit input advState
-        (encodeCoordinates input raw).hash fibers state) :
+      programmedStage (programSelected state input (encodeCoordinates input raw).hash fibers)) :
     ((uniformHashFibers raw.hash).bind fun fibers => (continuation fibers).map Prod.fst) =
       (uniformHashFibers (encodeCoordinates input raw).hash).bind fun fibers =>
         (continuation fibers).map Prod.fst := by
@@ -356,55 +356,55 @@ theorem uniformHashFibers_selected (adversary : Adversary) (parameter : Nat) (au
     simp [encodeCoordinates, selectOutput, unset]
   · intro gate member fibers value
     have set : inputBits input gate.1 gate.2 = true := (Finset.mem_filter.mp member).2
-    rw [body, body, selectedStageTwo_setGate adversary parameter auxiliary circuit input advState
-      (encodeCoordinates input raw).hash fibers state gate value set]
+    rw [body, body, programSelected_setGate state input (encodeCoordinates input raw).hash
+      fibers gate value set]
 
 /-- The reference game itself: the fiber sample is taken after the input is chosen, at the
 selected outputs. -/
-def fiberGame [FieldCertificate] (scalar : NonZeroScalar) (adversary : Adversary)
+def fiberGame (bridge : NonZeroBase → BaseField) (adversary : Adversary)
     (parameter : Nat) (auxiliary : Unit) : PMF Bool :=
   (PMF.uniformOfFintype ReferenceDatum).bind fun datum =>
     (PMF.uniformOfFintype BaseField).bind fun mask =>
       (PMF.uniformOfFintype (GateValues BaseField)).bind fun hash =>
-        fiberedBody scalar adversary parameter auxiliary datum mask hash
+        fiberedBody bridge adversary parameter auxiliary datum mask hash
 
 /-- Deferring the fiber sample past the first stage and moving it to the selected outputs is
 free. -/
-theorem fiberedDigestGame_eq_fiberGame [FieldCertificate] (scalar : NonZeroScalar)
+theorem fiberedDigestGame_eq_fiberGame (bridge : NonZeroBase → BaseField)
     (adversary : Adversary) (parameter : Nat) (auxiliary : Unit) :
-    fiberedDigestGame scalar adversary parameter auxiliary =
-      fiberGame scalar adversary parameter auxiliary := by
+    fiberedDigestGame bridge adversary parameter auxiliary =
+      fiberGame bridge adversary parameter auxiliary := by
   unfold fiberedDigestGame fiberGame
   refine congrArg (PMF.bind _) (funext fun datum => ?_)
   refine congrArg (PMF.bind _) (funext fun mask => ?_)
   rw [PMF.bind_bind]
   refine congrArg (PMF.bind _) (funext fun hash => ?_)
   have reduce : ((uniformHashFibers hash).bind fun digests =>
-      digestedBody scalar adversary parameter auxiliary datum mask (digestField digests)
+      digestedBody bridge adversary parameter auxiliary datum mask (digestField digests)
         digests) =
       (uniformHashFibers hash).bind fun fibers =>
-        digestedBody scalar adversary parameter auxiliary datum mask hash fibers :=
+        digestedBody bridge adversary parameter auxiliary datum mask hash fibers :=
     bind_congr_support fun fibers member =>
-      congrArg (fun outputs => digestedBody scalar adversary parameter auxiliary datum mask
+      congrArg (fun outputs => digestedBody bridge adversary parameter auxiliary datum mask
         outputs fibers) (digestField_of_mem_uniformHashFibers hash fibers member)
   rw [reduce]
   unfold digestedBody fiberedBody
   rw [PMF.bind_comm (uniformHashFibers hash)
-    (loggedFirstStage adversary parameter auxiliary (referenceCircuit scalar datum mask hash)
+    (loggedFirstStage adversary parameter auxiliary (referenceCircuit bridge datum mask hash)
       (referenceView datum))
     fun fibers outcome =>
       (selectedStageTwo adversary parameter auxiliary
-        (referenceCircuit scalar datum mask hash) outcome.1.1 outcome.1.2
+        (referenceCircuit bridge datum mask hash) outcome.1.1 outcome.1.2
         (encodeCoordinates outcome.1.1 (referenceRaw datum mask hash)).hash fibers
         (stageTwoState (referenceView datum) outcome.2
-          (referenceCircuit scalar datum mask hash).1 (referenceCarrier datum)
+          (referenceCircuit bridge datum mask hash).1 (referenceCarrier datum)
           (referenceKey datum))).map Prod.fst]
   refine congrArg (PMF.bind _) (funext fun outcome => ?_)
-  exact uniformHashFibers_selected adversary parameter auxiliary
-    (referenceCircuit scalar datum mask hash) outcome.1.1 outcome.1.2
-    (referenceRaw datum mask hash)
+  exact uniformHashFibers_selected outcome.1.1 (referenceRaw datum mask hash)
     (stageTwoState (referenceView datum) outcome.2
-      (referenceCircuit scalar datum mask hash).1 (referenceCarrier datum) (referenceKey datum))
+      (referenceCircuit bridge datum mask hash).1 (referenceCarrier datum) (referenceKey datum))
+    (hybridStageTwo adversary parameter auxiliary (referenceCircuit bridge datum mask hash)
+      outcome.1.1 outcome.1.2)
     _ fun _ => rfl
 
 /-! ### The identification with the reference game -/
@@ -521,20 +521,20 @@ def referenceSampleEquiv :
 /-- Step 2 ends at the reference game of the hybrid side's own bridge key. -/
 theorem fiberGame_eq_referenceGame [FieldCertificate] (scalar : NonZeroScalar)
     (adversary : Adversary) (parameter : Nat) (auxiliary : Unit) :
-    fiberGame scalar adversary parameter auxiliary =
-      referenceGame (fun carrier => ((mulScalar scalar).symm carrier).value) adversary parameter
+    fiberGame (hybridBridge scalar) adversary parameter auxiliary =
+      referenceGame (hybridBridge scalar) adversary parameter
         auxiliary := by
-  have left : fiberGame scalar adversary parameter auxiliary =
+  have left : fiberGame (hybridBridge scalar) adversary parameter auxiliary =
       (PMF.uniformOfFintype (ReferenceDatum × BaseField × GateValues BaseField)).bind
-        fun sample => fiberedBody scalar adversary parameter auxiliary sample.1 sample.2.1
-          sample.2.2 := by
+        fun sample => fiberedBody (hybridBridge scalar) adversary parameter auxiliary sample.1
+          sample.2.1 sample.2.2 := by
     unfold fiberGame
     simp only [uniformOfFintype_bind_prod]
-  have right : referenceGame (fun carrier => ((mulScalar scalar).symm carrier).value) adversary
+  have right : referenceGame (hybridBridge scalar) adversary
         parameter auxiliary =
       (PMF.uniformOfFintype (Garbling.Randomness × InputMacKey ×
         PermutationOracle FixedKeyIndex Block × NonZeroBase × Coordinates)).bind fun sample =>
-          referenceRound (fun carrier => ((mulScalar scalar).symm carrier).value) adversary
+          referenceRound (hybridBridge scalar) adversary
             parameter auxiliary (sample.2.2.1, sample.1.encOracle, sample.1.hashOracle)
             sample.2.1 sample.2.2.2.1 sample.2.2.2.2 := by
     rw [referenceGame_eq_split]
@@ -550,13 +550,14 @@ the one-time budget. -/
 theorem advantage_digestedReference_referenceGame_le [FieldCertificate] (scalar : NonZeroScalar)
     (adversary : Adversary) (parameter : Nat) (auxiliary : Unit) :
     advantage (digestedReference scalar adversary parameter auxiliary)
-        (referenceGame (fun carrier => ((mulScalar scalar).symm carrier).value) adversary
+        (referenceGame (hybridBridge scalar) adversary
           parameter auxiliary) ≤ sideOneTime := by
   rw [digestedReference_eq, ← fiberGame_eq_referenceGame, ← fiberedDigestGame_eq_fiberGame]
   unfold sideOneTime
   exact advantage_trans _ _ _ _ _
-    (advantage_digestedGame_maskedGame_le scalar adversary parameter auxiliary)
-    (advantage_maskedGame_fiberedDigestGame_le scalar adversary parameter auxiliary)
+    (advantage_digestedGame_maskedGame_le (hybridBridge scalar) adversary parameter auxiliary)
+    (advantage_maskedGame_fiberedDigestGame_le (hybridBridge scalar) adversary parameter
+      auxiliary)
 
 /-- The hybrid side of the chain, complete: the hybrid game is within `4 (q₁ + q₂) / 2 ^ 128`
 plus one side's one-time budget of the reference game of its own bridge key `carrier /
@@ -566,7 +567,7 @@ theorem advantage_hybridGame_referenceGame_le [FieldCertificate] [GroupCertifica
     advantage
         (idealGame Garbling.garbledCircuit (fun _ => ciphertextBytes) (hybridSimulator scalar)
           idealOracle adversary parameter scalar auxiliary)
-        (referenceGame (fun carrier => ((mulScalar scalar).symm carrier).value) adversary
+        (referenceGame (hybridBridge scalar) adversary
           parameter auxiliary) ≤
       4 * ((adversary.firstQueryBudget parameter +
         adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 + sideOneTime :=
