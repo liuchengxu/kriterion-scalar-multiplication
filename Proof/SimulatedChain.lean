@@ -617,8 +617,8 @@ theorem simulatedGame_eq_split [FieldCertificate] [GroupCertificate] (adversary 
     idealGame Garbling.garbledCircuit (fun _ => ciphertextBytes) simulator idealOracle adversary
         parameter scalar auxiliary =
       (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
-        (PMF.uniformOfFintype NonZeroBase).bind fun bridgeKey =>
-          (PMF.uniformOfFintype InputMacKey).bind fun key =>
+        (PMF.uniformOfFintype InputMacKey).bind fun key =>
+          (PMF.uniformOfFintype NonZeroBase).bind fun bridgeKey =>
             (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
               (PMF.uniformOfFintype (NonZeroBase × BaseField × BaseField)).bind fun curve =>
                 (PMF.uniformOfFintype NonZeroBase).bind fun carrier =>
@@ -626,7 +626,7 @@ theorem simulatedGame_eq_split [FieldCertificate] [GroupCertificate] (adversary 
                     curve.1.value curve.2.1 curve.2.2 carrier key
                     (oracle, tape.encOracle, tape.hashOracle) := by
   rw [simulatedGame_eq_simulatedOn, ← uniform_bind_setCurve, ← uniform_bind_setOracle,
-    ← uniform_bind_setKey, ← uniform_bind_setBridge]
+    ← uniform_bind_setBridge, ← uniform_bind_setKey]
   rfl
 
 /-- The S side after the first hop: the oracle is programmed at every used label to the
@@ -650,8 +650,8 @@ theorem simulatedGame_eq_fresh [FieldCertificate] [GroupCertificate] (adversary 
     idealGame Garbling.garbledCircuit (fun _ => ciphertextBytes) simulator idealOracle adversary
         parameter scalar auxiliary =
       (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
-        (PMF.uniformOfFintype NonZeroBase).bind fun bridgeKey =>
-          (PMF.uniformOfFintype InputMacKey).bind fun key =>
+        (PMF.uniformOfFintype InputMacKey).bind fun key =>
+          (PMF.uniformOfFintype NonZeroBase).bind fun bridgeKey =>
             (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
               (PMF.uniformOfFintype (GateValues (BitVec 384) ×
                   GateValues BitAdaptor.Ciphertext)).bind fun secrets =>
@@ -662,8 +662,8 @@ theorem simulatedGame_eq_fresh [FieldCertificate] [GroupCertificate] (adversary 
                       curve.2.2 secrets := by
   rw [simulatedGame_eq_split]
   refine congrArg (PMF.bind _) (funext fun tape => ?_)
-  refine congrArg (PMF.bind _) (funext fun bridgeKey => ?_)
   refine congrArg (PMF.bind _) (funext fun key => ?_)
+  refine congrArg (PMF.bind _) (funext fun bridgeKey => ?_)
   rw [← uniform_bind_usedPrograms key]
   refine congrArg (PMF.bind _) (funext fun oracle => ?_)
   refine congrArg (PMF.bind _) (funext fun secrets => ?_)
@@ -676,3 +676,179 @@ theorem simulatedGame_eq_fresh [FieldCertificate] [GroupCertificate] (adversary 
         (oracle, freshOfSecrets key secrets.1 secrets.2)).1 from rfl,
     curveGarble_programFamily, freshHash_freshOfSecrets, freshPad_freshOfSecrets,
     programFamily_eq_programIndices]
+
+/-! ### The S side of the chain, assembled -/
+
+/-- The key-free sample of the S side: the tape's own bridge key `u`, and the same key-free
+sample as the hybrid side -- the tape's unread oracles, the unprogrammed fixed-key oracle,
+the fresh per-gate digests and pads, the curve coordinates and the carrier. -/
+abbrev SimulatedDatum := NonZeroBase × HybridDatum
+
+/-- The law of the key-free sample of the S side. -/
+def simulatedData : PMF SimulatedDatum :=
+  (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+    (PMF.uniformOfFintype NonZeroBase).bind fun bridgeKey =>
+      (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+        (PMF.uniformOfFintype (GateValues (BitVec 384) ×
+            GateValues BitAdaptor.Ciphertext)).bind fun secrets =>
+          (PMF.uniformOfFintype (NonZeroBase × BaseField × BaseField)).bind fun curve =>
+            (PMF.uniformOfFintype NonZeroBase).map fun carrier =>
+              (bridgeKey, tape, oracle, secrets, curve, carrier)
+
+theorem simulatedData_bind {Outcome : Type} (continuation : SimulatedDatum → PMF Outcome) :
+    simulatedData.bind continuation =
+      (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+        (PMF.uniformOfFintype NonZeroBase).bind fun bridgeKey =>
+          (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+            (PMF.uniformOfFintype (GateValues (BitVec 384) ×
+                GateValues BitAdaptor.Ciphertext)).bind fun secrets =>
+              (PMF.uniformOfFintype (NonZeroBase × BaseField × BaseField)).bind fun curve =>
+                (PMF.uniformOfFintype NonZeroBase).bind fun carrier =>
+                  continuation (bridgeKey, tape, oracle, secrets, curve, carrier) := by
+  unfold simulatedData
+  simp only [PMF.bind_bind, PMF.bind_map, Function.comp_def]
+
+/-- The bridge key of one sample: the tape's own `u`, independent of the carrier. -/
+def simulatedBridgeKey (datum : SimulatedDatum) : BaseField := datum.1.value
+
+/-- The public value of one sample. It does not depend on the label key. -/
+def simulatedCircuit (datum : SimulatedDatum) : Garbling.Public :=
+  (Coordinates.table (simulatedBridgeKey datum) witnessTape.inputMacKey (hybridRaw datum.2),
+    carrierBits (hybridCarrier datum.2))
+
+theorem simulatedCircuit_table (key : InputMacKey) (datum : SimulatedDatum) :
+    (simulatedCircuit datum).1 =
+      Coordinates.table (simulatedBridgeKey datum) key
+        (digestedRaw (hybridMask datum.2) (hybridR1 datum.2) (hybridR2 datum.2)
+          (hybridDigests datum.2) (hybridPads datum.2)) :=
+  Coordinates.table_key _ _ _ _
+
+/-- The S side after the first hop, in the shape the two oracle hops consume. -/
+theorem simulatedGame_eq_used [FieldCertificate] [GroupCertificate] (adversary : Adversary)
+    (parameter : Nat) (scalar : NonZeroScalar) (auxiliary : Unit) :
+    idealGame Garbling.garbledCircuit (fun _ => ciphertextBytes) simulator idealOracle adversary
+        parameter scalar auxiliary =
+      (PMF.uniformOfFintype InputMacKey).bind fun key => simulatedData.bind fun datum =>
+        (loggedFirstStage adversary parameter auxiliary (simulatedCircuit datum)
+            (programIndices (usedPrograms key (freshValue (hybridDigests datum.2)
+                (hybridPads datum.2))) (hybridView datum.2).1,
+              (hybridView datum.2).2)).bind fun outcome =>
+          (usedSimulatedStageTwo adversary parameter auxiliary (simulatedCircuit datum)
+            outcome.1.1 (checkedScalarMultiplication scalar.value outcome.1.1) outcome.1.2 key
+            (freshValue (hybridDigests datum.2) (hybridPads datum.2)) (hybridView datum.2)
+            outcome.2 (hybridCarrier datum.2)).map Prod.fst := by
+  rw [simulatedGame_eq_fresh,
+    PMF.bind_comm (PMF.uniformOfFintype Garbling.Randomness) (PMF.uniformOfFintype InputMacKey)]
+  refine congrArg (PMF.bind _) (funext fun key => ?_)
+  rw [simulatedData_bind]
+  refine congrArg (PMF.bind _) (funext fun tape => ?_)
+  refine congrArg (PMF.bind _) (funext fun bridgeKey => ?_)
+  refine congrArg (PMF.bind _) (funext fun oracle => ?_)
+  refine congrArg (PMF.bind _) (funext fun secrets => ?_)
+  refine congrArg (PMF.bind _) (funext fun curve => ?_)
+  refine congrArg (PMF.bind _) (funext fun carrier => ?_)
+  unfold simulatedFresh simulatedTwoStage
+  rw [show (Coordinates.table bridgeKey.value key
+        ⟨curve.1.value, curve.2.1, curve.2.2, digestField secrets.1, secrets.2⟩,
+        carrierBits carrier) =
+      simulatedCircuit (bridgeKey, tape, oracle, secrets, curve, carrier) from
+    congrArg (fun table => (table, carrierBits carrier))
+      (Coordinates.table_key _ _ _ _)]
+  rfl
+
+/-- The S side after both oracle hops: the first stage runs on the unprogrammed view and
+the second stage -- the simulator's labels and steering -- on the view programmed at the
+selected labels only, with the fresh digests in place of the reference game's fiber
+sample. -/
+def steeredDigested [FieldCertificate] [GroupCertificate] (scalar : NonZeroScalar)
+    (adversary : Adversary) (parameter : Nat) (auxiliary : Unit) : PMF Bool :=
+  (PMF.uniformOfFintype InputMacKey).bind fun key => simulatedData.bind fun datum =>
+    (loggedFirstStage adversary parameter auxiliary (simulatedCircuit datum)
+        (hybridView datum.2)).bind fun outcome =>
+      (selectedSimulatedStageTwo adversary parameter auxiliary (simulatedCircuit datum)
+        outcome.1.1 (checkedScalarMultiplication scalar.value outcome.1.1) outcome.1.2
+        (encodeCoordinates outcome.1.1 (hybridRaw datum.2)).hash (hybridDigests datum.2)
+        (stageTwoState (hybridView datum.2) outcome.2 (simulatedCircuit datum).1
+          (hybridCarrier datum.2) key)).map Prod.fst
+
+/-- Steps 4, 5 and 6 of the chain: the simulated game is within `4 (q₁ + q₂) / 2 ^ 128` of
+the reference-shaped game of the tape's own bridge key, with the steering still in place,
+the fresh digests still in place of the reference game's fiber sample and the nonzero mask
+still in place of the uniform one. -/
+theorem advantage_simulatedGame_steeredDigested_le [FieldCertificate] [GroupCertificate]
+    (adversary : Adversary) (parameter : Nat) (scalar : NonZeroScalar) (auxiliary : Unit) :
+    advantage
+        (idealGame Garbling.garbledCircuit (fun _ => ciphertextBytes) simulator idealOracle
+          adversary parameter scalar auxiliary)
+        (steeredDigested scalar adversary parameter auxiliary) ≤
+      4 * ((adversary.firstQueryBudget parameter +
+        adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 := by
+  have firstHop := advantage_firstView_le adversary parameter auxiliary simulatedData
+    (fun datum => hybridView datum.2) simulatedCircuit (fun datum => hybridCarrier datum.2)
+    (fun datum => freshValue (hybridDigests datum.2) (hybridPads datum.2))
+    fun key datum outcome => (usedSimulatedStageTwo adversary parameter auxiliary
+      (simulatedCircuit datum) outcome.1.1
+      (checkedScalarMultiplication scalar.value outcome.1.1) outcome.1.2 key
+      (freshValue (hybridDigests datum.2) (hybridPads datum.2)) (hybridView datum.2) outcome.2
+      (hybridCarrier datum.2)).map Prod.fst
+  have secondHop := advantage_secondStage_le adversary parameter auxiliary simulatedData
+    (fun datum => hybridView datum.2) simulatedCircuit
+    (fun datum => freshValue (hybridDigests datum.2) (hybridPads datum.2))
+    (fun key datum outcome => usedSimulatedStageTwo adversary parameter auxiliary
+      (simulatedCircuit datum) outcome.1.1
+      (checkedScalarMultiplication scalar.value outcome.1.1) outcome.1.2 key
+      (freshValue (hybridDigests datum.2) (hybridPads datum.2)) (hybridView datum.2) outcome.2
+      (hybridCarrier datum.2))
+    (fun key datum outcome => selectedSimulatedStageTwo adversary parameter auxiliary
+      (simulatedCircuit datum) outcome.1.1
+      (checkedScalarMultiplication scalar.value outcome.1.1) outcome.1.2
+      (encodeCoordinates outcome.1.1 (hybridRaw datum.2)).hash (hybridDigests datum.2)
+      (stageTwoState (hybridView datum.2) outcome.2 (simulatedCircuit datum).1
+        (hybridCarrier datum.2) key))
+    (fun key datum outcome result log good =>
+      usedSimulatedStageTwo_agree adversary parameter auxiliary (simulatedCircuit datum)
+        outcome.1.1 (checkedScalarMultiplication scalar.value outcome.1.1) outcome.1.2
+        (hybridView datum.2).1 (hybridView datum.2).2 outcome.2 (hybridCarrier datum.2) key
+        (simulatedBridgeKey datum) (hybridMask datum.2) (hybridR1 datum.2) (hybridR2 datum.2)
+        (hybridDigests datum.2) (hybridPads datum.2) (simulatedCircuit_table key datum)
+        result log good)
+    (fun key datum outcome blocks =>
+      selectedSimulatedStageTwo_unread adversary parameter auxiliary (simulatedCircuit datum)
+        outcome.1.1 (checkedScalarMultiplication scalar.value outcome.1.1) outcome.1.2 _
+        (hybridDigests datum.2) (hybridView datum.2) outcome.2 (simulatedCircuit datum).1
+        (hybridCarrier datum.2) key blocks)
+    (fun key datum outcome result member => by
+      have bound := simulatedStageTwo_length adversary parameter auxiliary
+        (simulatedCircuit datum) outcome.1.1
+        (checkedScalarMultiplication scalar.value outcome.1.1) outcome.1.2
+        (programSelected (stageTwoState (hybridView datum.2) outcome.2
+          (simulatedCircuit datum).1 (hybridCarrier datum.2) key) outcome.1.1
+          (encodeCoordinates outcome.1.1 (hybridRaw datum.2)).hash (hybridDigests datum.2))
+        result member
+      rw [programSelected_log, stageTwoState_log] at bound
+      exact bound)
+  rw [← simulatedGame_eq_used] at firstHop
+  refine le_trans (advantage_trans _ _ _ _ _ firstHop secondHop) ?_
+  have budgets : (adversary.firstQueryBudget parameter : ℝ) ≤
+      ((adversary.firstQueryBudget parameter +
+        adversary.secondQueryBudget parameter : Nat) : ℝ) := by
+    rw [Nat.cast_add]
+    exact le_add_of_nonneg_right (Nat.cast_nonneg _)
+  have step : 2 * (adversary.firstQueryBudget parameter : ℝ) / 2 ^ 128 ≤
+      2 * ((adversary.firstQueryBudget parameter +
+        adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 := by
+    gcongr
+  calc 2 * (adversary.firstQueryBudget parameter : ℝ) / 2 ^ 128 +
+        2 * ((adversary.firstQueryBudget parameter +
+          adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128
+      ≤ 2 * ((adversary.firstQueryBudget parameter +
+            adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 +
+          2 * ((adversary.firstQueryBudget parameter +
+            adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 :=
+        add_le_add step le_rfl
+    _ = 4 * ((adversary.firstQueryBudget parameter +
+          adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 := by ring
+
+end
+
+end Kriterion.ArgoMAC.Security
