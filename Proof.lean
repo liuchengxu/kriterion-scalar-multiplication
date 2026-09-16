@@ -25,3 +25,4 @@ import Proof.HybridReference
 import Proof.SimulatedChain
 import Proof.SimulatedReference
 import Proof.Retarget
+import Proof.VisibleGame
