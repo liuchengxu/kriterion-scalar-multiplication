@@ -423,7 +423,8 @@ theorem simulatedStageTwo_agree [FieldCertificate] [GroupCertificate] (adversary
         (Lamport.selectedLabels (key.encodeAffine input)) auxiliary advState) bad
       (programAll (stageTwoState (first, rest) priorLog circuit.1 carrier key) requests)
       (programAll (stageTwoState (second, rest) priorLog circuit.1 carrier key) requests)
-      (by rw [programAll_log, programAll_log, stageTwoState_log, stageTwoState_log]) ?_ result log good
+      (by rw [programAll_log, programAll_log, stageTwoState_log, stageTwoState_log])
+      ?_ result log good
     · rw [runAgree]
     · intro query notBad
       refine publicAnswer_programAll_congr
@@ -686,8 +687,8 @@ abbrev SimulatedDatum := NonZeroBase × HybridDatum
 
 /-- The law of the key-free sample of the S side. -/
 def simulatedData : PMF SimulatedDatum :=
-  (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
-    (PMF.uniformOfFintype NonZeroBase).bind fun bridgeKey =>
+  (PMF.uniformOfFintype NonZeroBase).bind fun bridgeKey =>
+    (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
       (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
         (PMF.uniformOfFintype (GateValues (BitVec 384) ×
             GateValues BitAdaptor.Ciphertext)).bind fun secrets =>
@@ -697,8 +698,8 @@ def simulatedData : PMF SimulatedDatum :=
 
 theorem simulatedData_bind {Outcome : Type} (continuation : SimulatedDatum → PMF Outcome) :
     simulatedData.bind continuation =
-      (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
-        (PMF.uniformOfFintype NonZeroBase).bind fun bridgeKey =>
+      (PMF.uniformOfFintype NonZeroBase).bind fun bridgeKey =>
+        (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
           (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
             (PMF.uniformOfFintype (GateValues (BitVec 384) ×
                 GateValues BitAdaptor.Ciphertext)).bind fun secrets =>
@@ -740,9 +741,10 @@ theorem simulatedGame_eq_used [FieldCertificate] [GroupCertificate] (adversary :
   rw [simulatedGame_eq_fresh,
     PMF.bind_comm (PMF.uniformOfFintype Garbling.Randomness) (PMF.uniformOfFintype InputMacKey)]
   refine congrArg (PMF.bind _) (funext fun key => ?_)
-  rw [simulatedData_bind]
-  refine congrArg (PMF.bind _) (funext fun tape => ?_)
+  rw [PMF.bind_comm (PMF.uniformOfFintype Garbling.Randomness)
+    (PMF.uniformOfFintype NonZeroBase), simulatedData_bind]
   refine congrArg (PMF.bind _) (funext fun bridgeKey => ?_)
+  refine congrArg (PMF.bind _) (funext fun tape => ?_)
   refine congrArg (PMF.bind _) (funext fun oracle => ?_)
   refine congrArg (PMF.bind _) (funext fun secrets => ?_)
   refine congrArg (PMF.bind _) (funext fun curve => ?_)
