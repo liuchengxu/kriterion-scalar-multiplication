@@ -475,6 +475,189 @@ theorem advantage_firstView_le {Data : Type} (adversary : Adversary) (parameter 
     · rfl
     · exact le_of_eq (toReal_two_budget _)
 
+/-! ### The second oracle hop: the second stage keeps only the selected programming -/
+
+/-- Two views answer a query identically when they agree at the query's own index. -/
+theorem publicAnswer_permutation_congr (first second : PermutationOracle FixedKeyIndex Block)
+    (rest : PermutationOracle Garbling.EncIndex Block × (BaseField → Block × Block))
+    (query : Query)
+    (forward : ∀ index value, query = .fixedForward index value →
+      first.permutation index value = second.permutation index value)
+    (inverse : ∀ index value, query = .fixedInverse index value →
+      (first.permutation index).symm value = (second.permutation index).symm value) :
+    publicAnswer (first, rest) query = publicAnswer (second, rest) query := by
+  cases query with
+  | fixedForward index value => exact forward index value rfl
+  | fixedInverse index value => exact inverse index value rfl
+  | encForward _ _ => rfl
+  | encInverse _ _ => rfl
+  | hash _ => rfl
+
+/-- Programming reads one index only through its own request. -/
+theorem programIndices_congr_at (first second : Programs)
+    (oracle : PermutationOracle FixedKeyIndex Block) (index : FixedKeyIndex)
+    (same : first index = second index) :
+    (programIndices first oracle).permutation index =
+      (programIndices second oracle).permutation index := by
+  simp only [programIndices, same]
+
+/-! ### The reference coordinates of the fresh secrets -/
+
+/-- The reference sample the fresh digests and pads name. -/
+def digestedRaw (mask r1 r2 : BaseField) (digests : GateValues (BitVec 384))
+    (pads : GateValues BitAdaptor.Ciphertext) : Coordinates :=
+  ⟨mask, r1, r2, digestField digests, pads⟩
+
+theorem tableRow_digested (bridgeKey mask r1 r2 : BaseField) (key : InputMacKey)
+    (digests : GateValues (BitVec 384)) (pads : GateValues BitAdaptor.Ciphertext)
+    (adaptor : CurveAdaptor) (position : Fin coordinateBitCount) :
+    tableRow (Coordinates.table bridgeKey key (digestedRaw mask r1 r2 digests pads))
+        adaptor position =
+      pads adaptor position ^^^ BitAdaptor.fieldBytes
+        ((digestedRaw mask r1 r2 digests pads).slope adaptor +
+          digestField digests adaptor position) := by
+  unfold tableRow
+  rw [Coordinates.table_rows]
+  rfl
+
+theorem selectOutput_true (input : AffineInput) (raw : Coordinates) (adaptor : CurveAdaptor)
+    (position : Fin coordinateBitCount) (bit : inputBits input adaptor position = true) :
+    (encodeCoordinates input raw).hash adaptor position =
+      raw.slope adaptor + raw.hash adaptor position := by
+  simp only [encodeCoordinates, selectOutput, bit, if_true]
+
+/-- At a gate whose slot reads the selected label, the reference game's programming is the
+first hop's programming. -/
+theorem selectedPrograms_selected (key : InputMacKey) (input : AffineInput)
+    (bridgeKey mask r1 r2 : BaseField) (digests : GateValues (BitVec 384))
+    (pads : GateValues BitAdaptor.Ciphertext) (index : FixedKeyIndex)
+    (selected : slotBit index.slot = inputBits input index.adaptor index.position) :
+    selectedPrograms key input
+        (encodeCoordinates input (digestedRaw mask r1 r2 digests pads)).hash
+        (tableRow (Coordinates.table bridgeKey key (digestedRaw mask r1 r2 digests pads)))
+        digests index =
+      usedPrograms key (freshValue digests pads) index := by
+  obtain ⟨adaptor, position, slot⟩ := index
+  cases slot with
+  | hash chunk =>
+    have bit : inputBits input adaptor position = false := selected.symm
+    rw [selectedPrograms_hash, bit, if_neg (by simp)]
+    simp only [usedPrograms, usedLabel, freshValue, selectedLabel, slotRange, bit,
+      BitAdaptor.encode, if_neg (by simp : ¬(false = true))]
+  | pad chunk =>
+    have bit : inputBits input adaptor position = true := selected.symm
+    rw [selectedPrograms_pad, bit, if_pos rfl]
+    have row : tableRow (Coordinates.table bridgeKey key (digestedRaw mask r1 r2 digests pads))
+          adaptor position ^^^ BitAdaptor.fieldBytes
+            ((encodeCoordinates input (digestedRaw mask r1 r2 digests pads)).hash adaptor
+              position) = pads adaptor position := by
+      rw [tableRow_digested, selectOutput_true input _ adaptor position bit]
+      exact xor_xor_cancel _ _
+    rw [row]
+    simp [usedPrograms, usedLabel, freshValue, selectedLabel, slotRange, bit,
+      BitAdaptor.encode]
+
+/-- At a gate whose slot reads the unselected label, the reference game programs nothing. -/
+theorem selectedPrograms_unselected (key : InputMacKey) (input : AffineInput)
+    (outputs : GateValues BaseField) (rows : GateValues BitAdaptor.Ciphertext)
+    (fibers : GateValues (BitVec 384)) (index : FixedKeyIndex)
+    (unselected : slotBit index.slot ≠ inputBits input index.adaptor index.position) :
+    selectedPrograms key input outputs rows fibers index = none := by
+  obtain ⟨adaptor, position, slot⟩ := index
+  cases slot with
+  | hash chunk =>
+    have bit : inputBits input adaptor position = true := by
+      revert unselected
+      cases inputBits input adaptor position <;> simp [slotBit]
+    rw [selectedPrograms_hash, bit, if_pos rfl]
+  | pad chunk =>
+    have bit : inputBits input adaptor position = false := by
+      revert unselected
+      cases inputBits input adaptor position <;> simp [slotBit]
+    rw [selectedPrograms_pad, bit, if_neg (by simp)]
+
+/-- The label coordinate a query names when its own slot reads the label the input leaves
+unselected. Every other query sees the same programming in both views. -/
+def unreadQueryIndex (input : AffineInput) (query : Query) : Option LabelIndex :=
+  match queryIndex query with
+  | none => none
+  | some index =>
+    if slotBit index.slot = unreadLabelBits input (adaptorCoordinate index.adaptor, index.position)
+      then some (adaptorCoordinate index.adaptor, index.position) else none
+
+/-- A query is bad for the second oracle hop when the unselected label of its own gate is
+one of its hidden label values. -/
+def SelectedBad (oracle : PermutationOracle FixedKeyIndex Block)
+    (values : FixedKeyIndex → Block) (key : InputMacKey) (input : AffineInput)
+    (query : Query) : Prop :=
+  ∃ index, unreadQueryIndex input query = some index ∧
+    keyLabel key index.1 index.2 (unreadLabelBits input index) ∈ usedHidden oracle values query
+
+/-- A slot that does not read the selected label reads the unselected one. -/
+theorem slotBit_eq_unread (input : AffineInput) (index : FixedKeyIndex)
+    (unselected : slotBit index.slot ≠ inputBits input index.adaptor index.position) :
+    slotBit index.slot =
+      unreadLabelBits input (adaptorCoordinate index.adaptor, index.position) := by
+  rw [unreadLabelBits, ← inputBits_eq]
+  revert unselected
+  cases slotBit index.slot <;> cases inputBits input index.adaptor index.position <;> simp
+
+/-- Off its bad label values, a query cannot tell the first hop's programming at every used
+label from the reference game's programming at the selected labels only. -/
+theorem publicAnswer_selectedPrograms (oracle : PermutationOracle FixedKeyIndex Block)
+    (rest : PermutationOracle Garbling.EncIndex Block × (BaseField → Block × Block))
+    (key : InputMacKey) (input : AffineInput) (bridgeKey mask r1 r2 : BaseField)
+    (digests : GateValues (BitVec 384)) (pads : GateValues BitAdaptor.Ciphertext)
+    (query : Query)
+    (good : ¬ SelectedBad oracle (freshValue digests pads) key input query) :
+    publicAnswer (programIndices (usedPrograms key (freshValue digests pads)) oracle, rest)
+        query =
+      publicAnswer (programIndices (selectedPrograms key input
+        (encodeCoordinates input (digestedRaw mask r1 r2 digests pads)).hash
+        (tableRow (Coordinates.table bridgeKey key (digestedRaw mask r1 r2 digests pads)))
+        digests) oracle, rest) query := by
+  have atIndex (index : FixedKeyIndex) (named : queryIndex query = some index) :
+      (programIndices (usedPrograms key (freshValue digests pads)) oracle).permutation index =
+        (programIndices (selectedPrograms key input
+          (encodeCoordinates input (digestedRaw mask r1 r2 digests pads)).hash
+          (tableRow (Coordinates.table bridgeKey key (digestedRaw mask r1 r2 digests pads)))
+          digests) oracle).permutation index ∨
+        (usedLabel key index ∉ usedHidden oracle (freshValue digests pads) query ∧
+          (programIndices (usedPrograms key (freshValue digests pads)) oracle).permutation index =
+            programmed (oracle.permutation index) (usedLabel key index)
+              (freshValue digests pads index ^^^ usedLabel key index) ∧
+          (programIndices (selectedPrograms key input
+            (encodeCoordinates input (digestedRaw mask r1 r2 digests pads)).hash
+            (tableRow (Coordinates.table bridgeKey key (digestedRaw mask r1 r2 digests pads)))
+            digests) oracle).permutation index = oracle.permutation index) := by
+    by_cases selected : slotBit index.slot = inputBits input index.adaptor index.position
+    · exact Or.inl (programIndices_congr_at _ _ oracle index
+        (selectedPrograms_selected key input bridgeKey mask r1 r2 digests pads index
+          selected).symm)
+    · have unread : unreadQueryIndex input query =
+          some (adaptorCoordinate index.adaptor, index.position) := by
+        rw [unreadQueryIndex, named]
+        exact if_pos (slotBit_eq_unread input index selected)
+      have missing : usedLabel key index ∉ usedHidden oracle (freshValue digests pads) query := by
+        rw [usedLabel_eq_keyLabel, slotBit_eq_unread input index selected]
+        intro member
+        exact good ⟨(adaptorCoordinate index.adaptor, index.position), unread, member⟩
+      exact Or.inr ⟨missing,
+        programIndices_eq_programmed _ oracle index _ _ rfl,
+        programIndices_none _ oracle index
+          (selectedPrograms_unselected key input _ _ digests index selected)⟩
+  refine publicAnswer_permutation_congr _ _ rest query ?_ ?_
+  · rintro index value rfl
+    rcases atIndex index rfl with same | ⟨missing, first, second⟩
+    · rw [same]
+    · rw [first, second]
+      exact programmed_apply_of_not_mem _ _ _ _ missing
+  · rintro index value rfl
+    rcases atIndex index rfl with same | ⟨missing, first, second⟩
+    · rw [same]
+    · rw [first, second]
+      exact programmed_symm_apply_of_not_mem _ _ _ _ missing
+
 end
 
 end Kriterion.ArgoMAC.Security
