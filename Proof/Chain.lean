@@ -26,6 +26,11 @@ noncomputable section
 theorem advantage_eq (first second : PMF Bool) :
     advantage first second = |(first true).toReal - (second true).toReal| := rfl
 
+/-- Advantage is symmetric, so a hop proved in one orientation closes the other. -/
+theorem advantage_comm (first second : PMF Bool) :
+    advantage first second = advantage second first := by
+  rw [advantage_eq, advantage_eq, abs_sub_comm]
+
 /-- An identical-until-bad hop costs the mass of the bad event. -/
 theorem advantage_bind_le_bad {Sample : Type} (first second : PMF Sample)
     (firstContinuation secondContinuation : Sample → PMF Bool) (bad : Set Sample)
