@@ -6,4 +6,5 @@ import Proof.Steering
 import Proof.Privacy
 import Proof.Reference
 import Proof.Logged
+import Proof.Programming
 import Proof.Uniform
