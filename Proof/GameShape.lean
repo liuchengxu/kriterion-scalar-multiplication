@@ -445,6 +445,49 @@ theorem uniform_bind_setCurve {Outcome : Type} (continuation : Garbling.Randomne
   rw [swapped, unprod]
   simp only [PMF.bind_const]
 
+/-- The tape with its fixed-key oracle replaced. The first hop reparametrises the oracle,
+so it must be sampled after the label key that fixes the labels it is programmed at. -/
+def setOracle (tape : Garbling.Randomness)
+    (oracle : PermutationOracle FixedKeyIndex Block) : Garbling.Randomness :=
+  { tape with fixedKeyOracle := oracle }
+
+/-- Exchanging a tape's fixed-key oracle with a separate sample is an involution. -/
+def swapOracle : Garbling.Randomness × PermutationOracle FixedKeyIndex Block ≃
+    Garbling.Randomness × PermutationOracle FixedKeyIndex Block where
+  toFun pair := (setOracle pair.1 pair.2, pair.1.fixedKeyOracle)
+  invFun pair := (setOracle pair.1 pair.2, pair.1.fixedKeyOracle)
+  left_inv pair := by
+    obtain ⟨tape, _⟩ := pair
+    cases tape
+    rfl
+  right_inv pair := by
+    obtain ⟨tape, _⟩ := pair
+    cases tape
+    rfl
+
+/-- A uniform tape with a fresh uniform fixed-key oracle is a uniform tape. -/
+theorem uniform_bind_setOracle {Outcome : Type}
+    (continuation : Garbling.Randomness → PMF Outcome) :
+    ((PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+        (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+          continuation (setOracle tape oracle)) =
+      (PMF.uniformOfFintype Garbling.Randomness).bind continuation := by
+  rw [uniformOfFintype_bind_prod]
+  have swapped := uniformOfFintype_bind_equiv swapOracle
+    fun pair : Garbling.Randomness × PermutationOracle FixedKeyIndex Block =>
+      continuation pair.1
+  simp only [swapOracle, Equiv.coe_fn_mk] at swapped
+  have unprod : ((PMF.uniformOfFintype
+        (Garbling.Randomness × PermutationOracle FixedKeyIndex Block)).bind fun pair =>
+      continuation pair.1) =
+      (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+        (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun _ =>
+          continuation tape :=
+    (uniformOfFintype_bind_prod
+      fun tape (_ : PermutationOracle FixedKeyIndex Block) => continuation tape).symm
+  rw [swapped, unprod]
+  simp only [PMF.bind_const]
+
 /-! ### The simulated game in two-stage shape -/
 
 theorem map_fst_loggedOutcome {Result : Type} (law : PMF (Result × State)) :
