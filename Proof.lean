@@ -10,3 +10,4 @@ import Proof.Programming
 import Proof.Uniform
 import Proof.Deferred
 import Proof.ReferenceGame
+import Proof.Hidden
