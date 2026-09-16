@@ -582,6 +582,29 @@ theorem uniform_keyLabel_steeringBlocked_le (assigns : FamilyAssignment)
     (selectedChunk outputs rows fibers) (steeredChunk (rows .x7 0) wanted hash)
     (adaptorCoordinate .x7) 0 (inputBits input .x7 0)
 
+/-! ### The charge fits the reserved share -/
+
+/-- The hop's charge is inside its share of the budget, with a factor of two to spare and
+the whole one-time term unused: `3 q₁ / 2 ^ 128 ≤ 8 (q₁ + q₂) / 2 ^ 128 + 6 / 2 ^ 128`. No
+constant has to move. -/
+theorem steeringCharge_le_steeringStep (adversary : Adversary) (parameter : Nat) :
+    3 * ((adversary.firstQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 ≤
+      steeringStep adversary parameter := by
+  have first : (0 : ℝ) ≤ ((adversary.firstQueryBudget parameter : Nat) : ℝ) := Nat.cast_nonneg _
+  have second : (0 : ℝ) ≤ ((adversary.secondQueryBudget parameter : Nat) : ℝ) :=
+    Nat.cast_nonneg _
+  have cast : ((adversary.firstQueryBudget parameter +
+        adversary.secondQueryBudget parameter : Nat) : ℝ) =
+      ((adversary.firstQueryBudget parameter : Nat) : ℝ) +
+        ((adversary.secondQueryBudget parameter : Nat) : ℝ) := by push_cast; ring
+  unfold steeringStep
+  rw [cast, ← add_div]
+  have key : 3 * ((adversary.firstQueryBudget parameter : Nat) : ℝ) ≤
+      8 * (((adversary.firstQueryBudget parameter : Nat) : ℝ) +
+        ((adversary.secondQueryBudget parameter : Nat) : ℝ)) + 6 := by linarith
+  rw [div_eq_mul_inv, div_eq_mul_inv]
+  exact mul_le_mul_of_nonneg_right key (by positivity)
+
 end
 
 end Kriterion.ArgoMAC.Security
