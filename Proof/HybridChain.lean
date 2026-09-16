@@ -368,10 +368,6 @@ theorem publicAnswer_usedPrograms (oracle : PermutationOracle FixedKeyIndex Bloc
 
 /-! ### The first oracle hop: the first stage moves to the unprogrammed view -/
 
-/-- The key-free data of the H side: the unprogrammed view, the public value, the carrier,
-and the fresh value of every index. -/
-abbrev ChainData := View × Garbling.Public × NonZeroBase × (FixedKeyIndex → Block)
-
 /-- A sample built from the label key and the key-free data splits back into its two
 binds. -/
 theorem bind_pairLaw {Data Outcome : Type} (data : PMF Data)
@@ -386,9 +382,10 @@ theorem bind_pairLaw {Data Outcome : Type} (data : PMF Data)
   rfl
 
 /-- The bad event of an oracle hop: some entry of the stage's log is bad. -/
-def firstBad (adversary : Adversary) : Set ((InputMacKey × ChainData) ×
-    ((AffineInput × adversary.State) × List Query)) :=
-  {pair | ∃ query ∈ pair.2.2, UsedBad pair.1.2.1.1 pair.1.2.2.2.2 pair.1.1 query}
+def firstBad {Data : Type} (adversary : Adversary) (view : Data → View)
+    (values : Data → FixedKeyIndex → Block) :
+    Set ((InputMacKey × Data) × ((AffineInput × adversary.State) × List Query)) :=
+  {pair | ∃ query ∈ pair.2.2, UsedBad (view pair.1.2).1 (values pair.1.2) pair.1.1 query}
 
 /-- Two blocks of a query budget over `2 ^ 128`, as a real number. -/
 theorem toReal_two_budget (budget : Nat) :
@@ -399,72 +396,79 @@ theorem toReal_two_budget (budget : Nat) :
 /-- Hop A. Replacing the programmed first-stage view by the unprogrammed one is invisible
 until a logged query hits one of the two hidden label values of its own gate; the label is
 independent of the unprogrammed run, so that costs `2 q₁ / 2 ^ 128`. -/
-theorem advantage_firstView_le (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
-    (data : PMF ChainData)
-    (continuation : InputMacKey → ChainData →
+theorem advantage_firstView_le {Data : Type} (adversary : Adversary) (parameter : Nat)
+    (auxiliary : Unit) (data : PMF Data) (view : Data → View)
+    (circuit : Data → Garbling.Public) (carrier : Data → NonZeroBase)
+    (values : Data → FixedKeyIndex → Block)
+    (continuation : InputMacKey → Data →
       (AffineInput × adversary.State) × List Query → PMF Bool) :
     advantage
         ((PMF.uniformOfFintype InputMacKey).bind fun key => data.bind fun datum =>
-          (loggedFirstStage adversary parameter auxiliary datum.2.1
-              (programIndices (usedPrograms key datum.2.2.2) datum.1.1, datum.1.2)).bind
-            (continuation key datum))
+          (loggedFirstStage adversary parameter auxiliary (circuit datum)
+              (programIndices (usedPrograms key (values datum)) (view datum).1,
+                (view datum).2)).bind (continuation key datum))
         ((PMF.uniformOfFintype InputMacKey).bind fun key => data.bind fun datum =>
-          (loggedFirstStage adversary parameter auxiliary datum.2.1 datum.1).bind
+          (loggedFirstStage adversary parameter auxiliary (circuit datum) (view datum)).bind
             (continuation key datum)) ≤
       2 * (adversary.firstQueryBudget parameter : ℝ) / 2 ^ 128 := by
   rw [← bind_pairLaw data fun sample =>
-      (loggedFirstStage adversary parameter auxiliary sample.2.2.1
-        (programIndices (usedPrograms sample.1 sample.2.2.2.2) sample.2.1.1,
-          sample.2.1.2)).bind (continuation sample.1 sample.2),
+      (loggedFirstStage adversary parameter auxiliary (circuit sample.2)
+        (programIndices (usedPrograms sample.1 (values sample.2)) (view sample.2).1,
+          (view sample.2).2)).bind (continuation sample.1 sample.2),
     ← bind_pairLaw data fun sample =>
-      (loggedFirstStage adversary parameter auxiliary sample.2.2.1 sample.2.1).bind
+      (loggedFirstStage adversary parameter auxiliary (circuit sample.2) (view sample.2)).bind
         (continuation sample.1 sample.2)]
   refine le_trans (advantage_bind_le_jointBad
     ((PMF.uniformOfFintype InputMacKey).bind fun key => data.map fun datum => (key, datum))
-    (fun sample => loggedFirstStage adversary parameter auxiliary sample.2.2.1
-      (programIndices (usedPrograms sample.1 sample.2.2.2.2) sample.2.1.1, sample.2.1.2))
-    (fun sample => loggedFirstStage adversary parameter auxiliary sample.2.2.1 sample.2.1)
-    (fun sample => continuation sample.1 sample.2) (firstBad adversary) ?_) ?_
+    (fun sample => loggedFirstStage adversary parameter auxiliary (circuit sample.2)
+      (programIndices (usedPrograms sample.1 (values sample.2)) (view sample.2).1,
+        (view sample.2).2))
+    (fun sample => loggedFirstStage adversary parameter auxiliary (circuit sample.2)
+      (view sample.2))
+    (fun sample => continuation sample.1 sample.2) (firstBad adversary view values) ?_) ?_
   · rintro ⟨⟨key, datum⟩, result, log⟩ good
-    have goodQuery : ∀ query ∈ log, ¬ UsedBad datum.1.1 datum.2.2.2 key query := by
+    have goodQuery : ∀ query ∈ log, ¬ UsedBad (view datum).1 (values datum) key query := by
       intro query member bad
       exact good ⟨query, member, bad⟩
-    show (((adversary.chooseInput parameter datum.2.1 auxiliary).run idealOracle
-        (firstState (programIndices (usedPrograms key datum.2.2.2) datum.1.1, datum.1.2)
-          datum.2.1.1 ⟨1, one_ne_zero⟩ witnessTape.inputMacKey)).map loggedOutcome) (result, log) =
-      (((adversary.chooseInput parameter datum.2.1 auxiliary).run idealOracle
-        (firstState datum.1 datum.2.1.1 ⟨1, one_ne_zero⟩ witnessTape.inputMacKey)).map
-          loggedOutcome) (result, log)
-    exact run_idealOracle_agree (adversary.chooseInput parameter datum.2.1 auxiliary)
-      (UsedBad datum.1.1 datum.2.2.2 key)
-      (firstState (programIndices (usedPrograms key datum.2.2.2) datum.1.1, datum.1.2)
-        datum.2.1.1 ⟨1, one_ne_zero⟩ witnessTape.inputMacKey)
-      (firstState datum.1 datum.2.1.1 ⟨1, one_ne_zero⟩ witnessTape.inputMacKey) rfl
+    show ((((adversary.chooseInput parameter (circuit datum) auxiliary).run idealOracle
+        (firstState (programIndices (usedPrograms key (values datum)) (view datum).1,
+            (view datum).2)
+          (circuit datum).1 ⟨1, one_ne_zero⟩ witnessTape.inputMacKey)).map loggedOutcome))
+          (result, log) =
+      ((((adversary.chooseInput parameter (circuit datum) auxiliary).run idealOracle
+        (firstState (view datum) (circuit datum).1 ⟨1, one_ne_zero⟩
+          witnessTape.inputMacKey)).map loggedOutcome)) (result, log)
+    exact run_idealOracle_agree (adversary.chooseInput parameter (circuit datum) auxiliary)
+      (UsedBad (view datum).1 (values datum) key)
+      (firstState (programIndices (usedPrograms key (values datum)) (view datum).1,
+          (view datum).2) (circuit datum).1 ⟨1, one_ne_zero⟩ witnessTape.inputMacKey)
+      (firstState (view datum) (circuit datum).1 ⟨1, one_ne_zero⟩ witnessTape.inputMacKey) rfl
       (fun query notBad =>
-        publicAnswer_usedPrograms datum.1.1 datum.1.2 key datum.2.2.2 query notBad)
+        publicAnswer_usedPrograms (view datum).1 (view datum).2 key (values datum) query notBad)
       result log goodQuery
-  · have badLe := firstStage_hidden_le data Prod.fst (fun datum => datum.2.1)
-      (fun datum => datum.2.1.1) (fun datum => datum.2.2.1) adversary parameter auxiliary
-      queryLabelIndex (fun datum => usedHidden datum.1.1 datum.2.2.2) 2
+  · have badLe := firstStage_hidden_le data view circuit (fun datum => (circuit datum).1)
+      carrier adversary parameter auxiliary queryLabelIndex
+      (fun datum => usedHidden (view datum).1 (values datum)) 2
       (fun datum query => usedHidden_card _ _ query)
     have transport :
         (((PMF.uniformOfFintype InputMacKey).bind fun key => data.bind fun datum =>
-            ((adversary.chooseInput parameter datum.2.1 auxiliary).run idealOracle
-              (firstState datum.1 datum.2.1.1 datum.2.2.1 key)).map
+            ((adversary.chooseInput parameter (circuit datum) auxiliary).run idealOracle
+              (firstState (view datum) (circuit datum).1 (carrier datum) key)).map
                 fun selected => (key, datum, selected)).map
           fun triple => ((triple.1, triple.2.1), loggedOutcome triple.2.2)) =
         jointLaw ((PMF.uniformOfFintype InputMacKey).bind fun key =>
             data.map fun datum => (key, datum))
-          fun sample => loggedFirstStage adversary parameter auxiliary sample.2.2.1 sample.2.1 := by
+          fun sample => loggedFirstStage adversary parameter auxiliary (circuit sample.2)
+            (view sample.2) := by
       unfold jointLaw
       rw [bind_pairLaw data fun sample =>
-        (loggedFirstStage adversary parameter auxiliary sample.2.2.1 sample.2.1).map
-          (Prod.mk sample), PMF.map_bind]
+        (loggedFirstStage adversary parameter auxiliary (circuit sample.2)
+          (view sample.2)).map (Prod.mk sample), PMF.map_bind]
       refine congrArg (PMF.bind _) (funext fun key => ?_)
       rw [PMF.map_bind]
       refine congrArg (PMF.bind data) (funext fun datum => ?_)
-      rw [← map_loggedOutcome_firstState adversary parameter auxiliary datum.2.1
-        datum.1 datum.2.1.1 datum.2.2.1 key, PMF.map_comp, PMF.map_comp]
+      rw [← map_loggedOutcome_firstState adversary parameter auxiliary (circuit datum)
+        (view datum) (circuit datum).1 (carrier datum) key, PMF.map_comp, PMF.map_comp]
       rfl
     rw [← transport, PMF.toOuterMeasure_map_apply]
     refine le_trans (ENNReal.toReal_mono (by finiteness) (le_trans (le_of_eq ?_) badLe)) ?_
