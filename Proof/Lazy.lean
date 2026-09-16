@@ -1253,6 +1253,31 @@ theorem lazyRun_pinnedCount {Result : Type} {budget : Nat} (index : FixedKeyInde
     exact inductionHypothesis value state assign output member
 
 
+/-! ### The per-entry charge the steering hop consumes -/
+
+/-- One log entry can pin the image of an unpinned input to one value, and the conditional law
+charges that at `1 / (2 ^ 128 - budget)`. This is the per-entry bound a union bound over a
+transcript of `budget` entries consumes. -/
+theorem compatibleLaw_singleton_le (assign : Assignment) (injective : AssignmentInjective assign)
+    (input : Block) (fresh : assign input = none) (budget : Nat)
+    (small : pinnedCount assign ≤ budget) (value : Block) :
+    ((compatibleLaw assign).map fun permutation => permutation input).toOuterMeasure {value} ≤
+      (((2 ^ 128 - budget : Nat) : ENNReal))⁻¹ := by
+  rw [PMF.toOuterMeasure_apply_singleton]
+  exact compatibleLaw_apply_le assign injective input fresh budget small value
+
+/-- The same per-entry charge for the preimage of an unpinned value. -/
+theorem compatibleLaw_symm_singleton_le (assign : Assignment)
+    (injective : AssignmentInjective assign) (value : Block)
+    (fresh : value ∉ pinnedRange assign) (budget : Nat) (small : pinnedCount assign ≤ budget)
+    (input : Block) :
+    ((compatibleLaw assign).map fun permutation =>
+        permutation.symm value).toOuterMeasure {input} ≤
+      (((2 ^ 128 - budget : Nat) : ENNReal))⁻¹ := by
+  rw [PMF.toOuterMeasure_apply_singleton]
+  exact compatibleLaw_symm_apply_le assign injective value fresh budget small input
+
+
 end
 
 end Kriterion.ArgoMAC.Security
