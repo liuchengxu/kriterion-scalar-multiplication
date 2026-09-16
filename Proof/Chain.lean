@@ -5,10 +5,12 @@ hop can cost advantage, and the arithmetic of the accounting.
 A hop either swaps the sampled law (its cost is the total difference of the two
 laws), or swaps the continuation (its cost is the largest pointwise
 advantage), or is identical until a bad event (its cost is the mass of the bad
-event). The chain's ten identical-until-bad hops each cost `2 q / 2 ^ 128`, and
-the one-time terms -- the mask law and the 1270 digest replacements on each side,
-plus the freshness of the two chunks the steering reparametrisation swaps -- together
-stay below `2 ^ -118`, far below the `2 ^ -101` the arithmetic tail needs.
+event). Eight of the chain's identical-until-bad hops cost `2 q / 2 ^ 128` each
+(four on the hybrid side, four on the simulated side) and the steering hop costs
+`8 q / 2 ^ 128`, so the per-query constant is `16`; the one-time terms -- the mask
+law and the 1270 digest replacements on each side, plus the freshness of the two
+chunks the steering reparametrisation swaps -- together stay below `2 ^ -118`, far
+below the `2 ^ -101` the arithmetic tail needs.
 -/
 
 import Proof.Distance
@@ -132,16 +134,41 @@ theorem chainOneTime_lt : chainOneTime < 1 / 2 ^ 118 := by
 theorem chainOneTime_le : chainOneTime ≤ 1 / 2 ^ 101 :=
   le_of_lt (lt_of_lt_of_le chainOneTime_lt (by norm_num))
 
-/-- The chain closes the obligation: ten identical-until-bad hops, each costing
-`2 q / 2 ^ 128` over the whole log, plus the one-time terms. -/
+/-- The per-query constant of the chain.
+
+Eight hops are bounded on a *label* the adversary has not been handed, and each such hop
+hides two points per query direction, so each costs `2 q / 2 ^ 128`: the hybrid side's
+step 3 (two hops) and its two halves of step 2's identification, and the simulated side's
+steps 5 and 6 -- `4 q / 2 ^ 128` per side, `8 q / 2 ^ 128` for the two sides that are
+already machine-checked (`advantage_hybridGame_referenceGame_le` and
+`advantage_simulatedGame_steeredReferenceGame_le` each supply `4 q / 2 ^ 128`).
+
+The steering hop is **not** bounded on a label: three of its four bad points are hit only
+by evaluating or inverting the *unprogrammed* permutation at a point the transcript has
+not pinned, and conditionally on the transcript each of those is uniform over at least
+`2 ^ 128 - q` values; the fourth is a guess of one 128-bit chunk of a hash-fiber sample,
+whose largest point mass is above `1 / 2 ^ 128` because the fiber has about
+`2 ^ 384 / p` elements, not a power of two. Charging `1 / (2 ^ 128 - q) ≤ 2 / 2 ^ 128` for
+the first three (legitimate for `q < 2 ^ 127`; for `q ≥ 2 ^ 127` the whole bound is free,
+since `8 q / 2 ^ 128 ≥ 4 ≥ 1` and every advantage is at most one) and `2 / 2 ^ 128` for
+the fourth gives `8 q / 2 ^ 128` for the hop.
+
+So `8 + 8 = 16`. `workPerAdvantage_of_le` proves the arithmetic tail for **any**
+`perQuery ≤ 2 ^ 28`, so the margin to the wall is still `2 ^ 24`; `16` is chosen with
+slack over the honest figure (about `12.2`) rather than tight, and no statement of the
+obligation depends on the value. -/
+def chainPerQuery : ℝ := 16
+
+/-- The chain closes the obligation: the hops of the two sides at `2 q / 2 ^ 128` each and
+the steering hop at `8 q / 2 ^ 128`, plus the one-time terms. -/
 theorem workPerAdvantage_of_chain (adversary : Adversary) (parameter : Nat) (error : ℝ)
-    (bound : error ≤ 10 * ((adversary.firstQueryBudget parameter +
+    (bound : error ≤ chainPerQuery * ((adversary.firstQueryBudget parameter +
         adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 + chainOneTime) :
     WorkPerAdvantage 100 (adversaryWork adversary parameter) error := by
   unfold adversaryWork
   exact workPerAdvantage_of_le (adversary.firstQueryBudget parameter +
-    adversary.secondQueryBudget parameter) 10 chainOneTime error (by norm_num)
-    chainOneTime_le bound
+    adversary.secondQueryBudget parameter) chainPerQuery chainOneTime error
+    (by unfold chainPerQuery; norm_num) chainOneTime_le bound
 
 end
 
