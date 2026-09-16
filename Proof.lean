@@ -5,4 +5,5 @@ import Proof.Simulator
 import Proof.Steering
 import Proof.Privacy
 import Proof.Reference
+import Proof.Logged
 import Proof.Uniform
