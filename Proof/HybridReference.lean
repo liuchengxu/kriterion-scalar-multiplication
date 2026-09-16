@@ -407,6 +407,141 @@ theorem fiberedDigestGame_eq_fiberGame [FieldCertificate] (scalar : NonZeroScala
       (referenceCircuit scalar datum mask hash).1 (referenceCarrier datum) (referenceKey datum))
     _ fun _ => rfl
 
+/-! ### The identification with the reference game -/
+
+/-- One round of the reference game on explicit coordinates: the first stage runs on the
+unprogrammed view, the fiber sample is taken at the selected outputs of the chosen input,
+and the second stage runs on the view programmed at the selected labels. -/
+def referenceRound (bridge : NonZeroBase → BaseField) (adversary : Adversary) (parameter : Nat)
+    (auxiliary : Unit) (view : View) (key : InputMacKey) (carrier : NonZeroBase)
+    (raw : Coordinates) : PMF Bool :=
+  (loggedFirstStage adversary parameter auxiliary
+      (raw.table (bridge carrier) key, carrierBits carrier) view).bind fun outcome =>
+    (uniformHashFibers (encodeCoordinates outcome.1.1 raw).hash).bind fun fibers =>
+      (selectedStageTwo adversary parameter auxiliary
+        (raw.table (bridge carrier) key, carrierBits carrier) outcome.1.1 outcome.1.2
+        (encodeCoordinates outcome.1.1 raw).hash fibers
+        (stageTwoState view outcome.2 (raw.table (bridge carrier) key) carrier key)).map
+        Prod.fst
+
+/-- The reference game is one round of `referenceRound` on a uniform tape, carrier and raw
+coordinates. -/
+theorem referenceGame_eq (bridge : NonZeroBase → BaseField) (adversary : Adversary)
+    (parameter : Nat) (auxiliary : Unit) :
+    referenceGame bridge adversary parameter auxiliary =
+      (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+        (PMF.uniformOfFintype NonZeroBase).bind fun carrier =>
+          (PMF.uniformOfFintype Coordinates).bind fun raw =>
+            referenceRound bridge adversary parameter auxiliary (Garbling.evaluationOracle tape)
+              tape.inputMacKey carrier raw := by
+  unfold referenceGame
+  refine congrArg (PMF.bind _) (funext fun tape => ?_)
+  refine congrArg (PMF.bind _) (funext fun carrier => ?_)
+  refine congrArg (PMF.bind _) (funext fun raw => ?_)
+  have conditioned : (((adversary.chooseInput parameter
+        (raw.table (bridge carrier) tape.inputMacKey, carrierBits carrier) auxiliary).run
+        idealOracle (initialState tape (raw.table (bridge carrier) tape.inputMacKey)
+          carrier)).bind fun selected =>
+      referenceStage2 adversary parameter auxiliary
+        (raw.table (bridge carrier) tape.inputMacKey, carrierBits carrier)
+        (encodeCoordinates selected.1.1 raw).hash selected) =
+      (((adversary.chooseInput parameter
+        (raw.table (bridge carrier) tape.inputMacKey, carrierBits carrier) auxiliary).run
+        idealOracle (initialState tape (raw.table (bridge carrier) tape.inputMacKey)
+          carrier)).bind fun selected =>
+      referenceStage2 adversary parameter auxiliary
+        (raw.table (bridge carrier) tape.inputMacKey, carrierBits carrier)
+        (encodeCoordinates selected.1.1 raw).hash
+        (selected.1, stageTwoState (Garbling.evaluationOracle tape) selected.2.log
+          (raw.table (bridge carrier) tape.inputMacKey) carrier tape.inputMacKey)) := by
+    refine bind_congr_support fun selected member => ?_
+    obtain ⟨sameView, sameTable, sameCarrier, sameKey⟩ :=
+      run_idealOracle_support _ _ selected member
+    rw [← eq_stageTwoState (Garbling.evaluationOracle tape)
+      (raw.table (bridge carrier) tape.inputMacKey) carrier tape.inputMacKey selected.2 sameView
+      sameTable sameCarrier sameKey]
+  have factor := (PMF.bind_map
+    ((adversary.chooseInput parameter (raw.table (bridge carrier) tape.inputMacKey,
+        carrierBits carrier) auxiliary).run idealOracle
+      (initialState tape (raw.table (bridge carrier) tape.inputMacKey) carrier))
+    loggedOutcome
+    (fun outcome : (AffineInput × adversary.State) × List Query =>
+      referenceStage2 adversary parameter auxiliary
+        (raw.table (bridge carrier) tape.inputMacKey, carrierBits carrier)
+        (encodeCoordinates outcome.1.1 raw).hash
+        (outcome.1, stageTwoState (Garbling.evaluationOracle tape) outcome.2
+          (raw.table (bridge carrier) tape.inputMacKey) carrier tape.inputMacKey))).symm
+  refine conditioned.trans (factor.trans ?_)
+  rw [show initialState tape (raw.table (bridge carrier) tape.inputMacKey) carrier =
+      firstState (Garbling.evaluationOracle tape)
+        (raw.table (bridge carrier) tape.inputMacKey) carrier tape.inputMacKey from rfl,
+    map_loggedOutcome_firstState adversary parameter auxiliary
+    (raw.table (bridge carrier) tape.inputMacKey, carrierBits carrier)
+    (Garbling.evaluationOracle tape) (raw.table (bridge carrier) tape.inputMacKey) carrier
+    tape.inputMacKey]
+  refine congrArg (PMF.bind _) (funext fun outcome => ?_)
+  unfold referenceStage2 selectedStageTwo hybridStageTwo
+  exact congrArg (PMF.bind _) (funext fun fibers => (map_fst_loggedOutcome _).symm)
+
+/-- The reference game with the label key and the fixed-key oracle sampled separately from
+the rest of the tape. -/
+theorem referenceGame_eq_split (bridge : NonZeroBase → BaseField) (adversary : Adversary)
+    (parameter : Nat) (auxiliary : Unit) :
+    referenceGame bridge adversary parameter auxiliary =
+      (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+        (PMF.uniformOfFintype InputMacKey).bind fun key =>
+          (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+            (PMF.uniformOfFintype NonZeroBase).bind fun carrier =>
+              (PMF.uniformOfFintype Coordinates).bind fun raw =>
+                referenceRound bridge adversary parameter auxiliary
+                  (oracle, tape.encOracle, tape.hashOracle) key carrier raw := by
+  rw [referenceGame_eq, ← uniform_bind_setOracle, ← uniform_bind_setKey]
+  rfl
+
+/-- The reference game's sample as the reference-shaped sample plus the mask and the hash
+secrets. -/
+def referenceSampleEquiv :
+    ReferenceDatum × BaseField × GateValues BaseField ≃
+      Garbling.Randomness × InputMacKey × PermutationOracle FixedKeyIndex Block ×
+        NonZeroBase × Coordinates where
+  toFun sample :=
+    (sample.1.2.1, sample.1.1, sample.1.2.2.1, referenceCarrier sample.1,
+      referenceRaw sample.1 sample.2.1 sample.2.2)
+  invFun sample :=
+    ((sample.2.1, sample.1, sample.2.2.1, sample.2.2.2.2.pad,
+        (sample.2.2.2.2.r1, sample.2.2.2.2.r2), sample.2.2.2.1),
+      sample.2.2.2.2.mask, sample.2.2.2.2.hash)
+  left_inv := by
+    rintro ⟨⟨key, tape, oracle, pads, ⟨r1, r2⟩, carrier⟩, mask, hash⟩
+    rfl
+  right_inv := by
+    rintro ⟨tape, key, oracle, carrier, ⟨mask, r1, r2, hash, pads⟩⟩
+    rfl
+
+/-- Step 2 ends at the reference game of the hybrid side's own bridge key. -/
+theorem fiberGame_eq_referenceGame [FieldCertificate] (scalar : NonZeroScalar)
+    (adversary : Adversary) (parameter : Nat) (auxiliary : Unit) :
+    fiberGame scalar adversary parameter auxiliary =
+      referenceGame (fun carrier => ((mulScalar scalar).symm carrier).value) adversary parameter
+        auxiliary := by
+  have left : fiberGame scalar adversary parameter auxiliary =
+      (PMF.uniformOfFintype (ReferenceDatum × BaseField × GateValues BaseField)).bind
+        fun sample => fiberedBody scalar adversary parameter auxiliary sample.1 sample.2.1
+          sample.2.2 := by
+    unfold fiberGame
+    simp only [uniformOfFintype_bind_prod]
+  have right : referenceGame (fun carrier => ((mulScalar scalar).symm carrier).value) adversary
+        parameter auxiliary =
+      (PMF.uniformOfFintype (Garbling.Randomness × InputMacKey ×
+        PermutationOracle FixedKeyIndex Block × NonZeroBase × Coordinates)).bind fun sample =>
+          referenceRound (fun carrier => ((mulScalar scalar).symm carrier).value) adversary
+            parameter auxiliary (sample.2.2.1, sample.1.encOracle, sample.1.hashOracle)
+            sample.2.1 sample.2.2.2.1 sample.2.2.2.2 := by
+    rw [referenceGame_eq_split]
+    simp only [uniformOfFintype_bind_prod]
+  rw [left, right, ← uniformOfFintype_bind_bijection referenceSampleEquiv]
+  rfl
+
 end
 
 end Kriterion.ArgoMAC.Security
