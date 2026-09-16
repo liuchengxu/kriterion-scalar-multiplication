@@ -472,6 +472,108 @@ theorem uniform_bind_setOracleAt {Outcome : Type} (index : FixedKeyIndex)
   rw [swapped, unprod]
   simp only [PMF.bind_const]
 
+/-- The conditional form of a run at one tracked index: sampling the tracked permutation
+before the run is sampling the transcript during the run and the permutation afterwards,
+conditioned on that transcript.
+
+This is `compatibleLaw_run` in the shape a game consumes -- the continuation reads the
+first stage's outcome and the tracked permutation, and needs no `map` bookkeeping. The
+initial transcript is empty, so the hypothesis of `compatibleLaw_run` is discharged by
+`emptyAssignment_injective` and the uniform law is `compatibleLaw_empty`. -/
+theorem uniform_run_compatibleLaw {Result Value : Type} {budget : Nat} (index : FixedKeyIndex)
+    (program : OracleProgram (publicOracleSpec FixedKeyIndex Garbling.EncIndex) Result budget)
+    (state : State)
+    (continuation : Result × List Query → Equiv Block Block → PMF Value) :
+    ((PMF.uniformOfFintype (Equiv Block Block)).bind fun permutation =>
+        (program.run idealOracle (setPermutation state index permutation)).bind fun output =>
+          continuation (output.1, output.2.log) permutation) =
+      (lazyRun index program state (fun _ => none)).bind fun output =>
+        (compatibleLaw output.2).bind fun permutation => continuation output.1 permutation := by
+  have left : ((PMF.uniformOfFintype (Equiv Block Block)).bind fun permutation =>
+        (program.run idealOracle (setPermutation state index permutation)).bind fun output =>
+          continuation (output.1, output.2.log) permutation) =
+      ((compatibleLaw (fun _ => none)).bind fun permutation =>
+          (program.run idealOracle (setPermutation state index permutation)).map fun output =>
+            ((output.1, output.2.log), permutation)).bind fun pair =>
+        continuation pair.1 pair.2 := by
+    rw [compatibleLaw_empty, PMF.bind_bind]
+    refine congrArg (PMF.bind _) (funext fun permutation => ?_)
+    rw [bind_of_map]
+  rw [left, compatibleLaw_run index program state (fun _ => none) emptyAssignment_injective,
+    PMF.bind_bind]
+  refine congrArg (PMF.bind _) (funext fun output => ?_)
+  rw [bind_of_map]
+
+/-! ### The transcript conditions of the double programming -/
+
+/-- The label values at which a transcript blocks `compatibleLaw_double`: the inputs the
+transcript pins, and, for each of the two chunk values, the label that would put a pinned
+value at the programmed range.
+
+Both programmed ranges are of the form `chunk ^^^ label` (`slotRange`), so "the range is
+already used" is one condition on the label per chunk, and "the label is already queried"
+is one more: **three** label values per pinned point of the transcript. -/
+def transcriptHidden (assign : Assignment) (honest steered : Block) : Finset Block :=
+  (pinnedDomain assign).toFinset ∪
+    ((pinnedRange assign).toFinset.image (honest ^^^ ·) ∪
+      (pinnedRange assign).toFinset.image (steered ^^^ ·))
+
+/-- The three conditions of `compatibleLaw_double` fail only at the hidden labels. -/
+theorem mem_transcriptHidden (assign : Assignment) (honest steered label : Block)
+    (blocked : label ∈ pinnedDomain assign ∨ honest ^^^ label ∈ pinnedRange assign ∨
+      steered ^^^ label ∈ pinnedRange assign) :
+    label ∈ transcriptHidden assign honest steered := by
+  have restore (value : Block) : value ^^^ (value ^^^ label) = label := by
+    rw [← BitVec.xor_assoc, BitVec.xor_self, BitVec.zero_xor]
+  rcases blocked with pinned | honestUsed | steeredUsed
+  · exact Finset.mem_union_left _ (Set.mem_toFinset.mpr pinned)
+  · exact Finset.mem_union_right _ (Finset.mem_union_left _
+      (Finset.mem_image.mpr ⟨honest ^^^ label, Set.mem_toFinset.mpr honestUsed, restore honest⟩))
+  · exact Finset.mem_union_right _ (Finset.mem_union_right _
+      (Finset.mem_image.mpr ⟨steered ^^^ label, Set.mem_toFinset.mpr steeredUsed,
+        restore steered⟩))
+
+/-- A transcript that pins `k` points blocks at most `3 k` labels. -/
+theorem transcriptHidden_card (assign : Assignment) (injective : AssignmentInjective assign)
+    (honest steered : Block) :
+    (transcriptHidden assign honest steered).card ≤ 3 * pinnedCount assign := by
+  have domain : (pinnedDomain assign).toFinset.card = pinnedCount assign := by
+    rw [Set.toFinset_card, card_pinnedDomain_eq]
+  have range : (pinnedRange assign).toFinset.card = pinnedCount assign := by
+    rw [Set.toFinset_card, card_pinnedRange assign injective, card_pinnedDomain_eq]
+  refine le_trans (Finset.card_union_le _ _) ?_
+  refine le_trans (Nat.add_le_add_left (Finset.card_union_le _ _) _) ?_
+  refine le_trans (Nat.add_le_add (le_of_eq domain)
+    (Nat.add_le_add (le_trans (Finset.card_image_le) (le_of_eq range))
+      (le_trans (Finset.card_image_le) (le_of_eq range)))) ?_
+  omega
+
+/-- The charge of the steering hop's transcript conditions: the selected label is a uniform
+block, so it blocks the double programming with mass at most three times the number of
+points the first stage pinned. -/
+theorem uniform_keyLabel_transcript_le (assign : Assignment)
+    (injective : AssignmentInjective assign) (budget : Nat)
+    (small : pinnedCount assign ≤ budget) (honest steered : Block) (coordinate : Bool)
+    (position : Fin coordinateBitCount) (value : Bool) :
+    (PMF.uniformOfFintype InputMacKey).toOuterMeasure
+        {key | keyLabel key coordinate position value ∈ pinnedDomain assign ∨
+          honest ^^^ keyLabel key coordinate position value ∈ pinnedRange assign ∨
+          steered ^^^ keyLabel key coordinate position value ∈ pinnedRange assign} ≤
+      3 * budget / 2 ^ 128 := by
+  have subset : {key : InputMacKey |
+        keyLabel key coordinate position value ∈ pinnedDomain assign ∨
+          honest ^^^ keyLabel key coordinate position value ∈ pinnedRange assign ∨
+          steered ^^^ keyLabel key coordinate position value ∈ pinnedRange assign} ⊆
+      {key | keyLabel key coordinate position value ∈ transcriptHidden assign honest steered} :=
+    fun key blocked => mem_transcriptHidden assign honest steered _ blocked
+  refine le_trans (MeasureTheory.measure_mono subset) ?_
+  rw [uniform_keyLabel_mem coordinate position value]
+  have cast : ((3 * budget : Nat) : ENNReal) = 3 * (budget : ENNReal) := by push_cast; ring
+  rw [← cast]
+  refine ENNReal.div_le_div_right (Nat.cast_le.mpr ?_) _
+  exact le_trans (transcriptHidden_card assign injective honest steered)
+    (Nat.mul_le_mul_left 3 small)
+
 end
 
 end Kriterion.ArgoMAC.Security
