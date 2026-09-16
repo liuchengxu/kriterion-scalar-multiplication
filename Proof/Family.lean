@@ -1221,17 +1221,17 @@ value per pinned point. -/
 theorem mem_familyLabelHidden_of_blocked (assigns : FamilyAssignment)
     (honest steered : Programs) (label : Block)
     (honestChunk steeredChunk : FixedKeyIndex → Block)
+    (steeredLabel : ∀ index other second, steered index = some (other, second) → other = label)
     (honestForm : ∀ index first, honest index = some (label, first) →
       first = honestChunk index ^^^ label)
     (steeredForm : ∀ index second, steered index = some (label, second) →
       second = steeredChunk index ^^^ label)
-    (blocked : steeringBlocked assigns honest steered)
-    (sameLabel : ∀ index other first, honest index = some (other, first) → other = label) :
+    (blocked : steeringBlocked assigns honest steered) :
     ∃ index : FixedKeyIndex, label ∈ pinnedDomain (assigns index) ∨
       honestChunk index ^^^ label ∈ pinnedRange (assigns index) ∨
       steeredChunk index ^^^ label ∈ pinnedRange (assigns index) := by
   obtain ⟨index, other, first, second, honestAt, steeredAt, hit⟩ := blocked
-  have otherEq : other = label := sameLabel index other first honestAt
+  have otherEq : other = label := steeredLabel index other second steeredAt
   subst otherEq
   refine ⟨index, ?_⟩
   rcases hit with pinned | usedFirst | usedSecond

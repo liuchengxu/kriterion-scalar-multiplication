@@ -428,6 +428,160 @@ theorem bind_familyLaw_programAll_eq_shifted (adversary : Adversary) (parameter 
         (table, carrierBits carrier) input advState
         (stageTwoState (oracleView, rest) log table carrier key)).map Prod.fst)
 
+/-! ### The bad event of the hop, priced over the selected label -/
+
+/-- The chunk the reference programming installs at an index: the programmed range with the
+selected label removed. -/
+def selectedChunk (outputs : GateValues BaseField) (rows : GateValues BitAdaptor.Ciphertext)
+    (fibers : GateValues (BitVec 384)) (index : FixedKeyIndex) : Block :=
+  slotChunk index.slot (fibers index.adaptor index.position)
+    (rows index.adaptor index.position ^^^
+      BitAdaptor.fieldBytes (outputs index.adaptor index.position))
+
+/-- The chunk the steering installs at an index. -/
+def steeredChunk (row : BitAdaptor.Ciphertext) (wanted : BaseField) (hash : BitVec 384)
+    (index : FixedKeyIndex) : Block :=
+  slotChunk index.slot hash (BitAdaptor.fieldBytes wanted ^^^ row)
+
+theorem selectedPrograms_range (key : InputMacKey) (input : AffineInput)
+    (outputs : GateValues BaseField) (rows : GateValues BitAdaptor.Ciphertext)
+    (fibers : GateValues (BitVec 384)) (index : FixedKeyIndex) (label range : Block)
+    (requested : selectedPrograms key input outputs rows fibers index = some (label, range)) :
+    range = selectedChunk outputs rows fibers index ^^^ label := by
+  obtain ⟨adaptor, position, slot⟩ := index
+  cases slot with
+  | hash chunk =>
+    rw [selectedPrograms_hash] at requested
+    cases bit : inputBits input adaptor position with
+    | true => rw [bit, if_pos rfl] at requested; exact absurd requested (by simp)
+    | false =>
+      rw [bit, if_neg Bool.false_ne_true] at requested
+      have parts : selectedLabel key input adaptor position = label ∧
+          slotRange (.hash chunk) (fibers adaptor position) 0
+            (selectedLabel key input adaptor position) = range := by simpa using requested
+      rw [← parts.2, slotRange_eq_slotChunk, parts.1]
+      rfl
+  | pad chunk =>
+    rw [selectedPrograms_pad] at requested
+    cases bit : inputBits input adaptor position with
+    | false => rw [bit, if_neg Bool.false_ne_true] at requested; exact absurd requested (by simp)
+    | true =>
+      rw [bit, if_pos rfl] at requested
+      have parts : selectedLabel key input adaptor position = label ∧
+          slotRange (.pad chunk) 0
+            (rows adaptor position ^^^ BitAdaptor.fieldBytes (outputs adaptor position))
+            (selectedLabel key input adaptor position) = range := by simpa using requested
+      rw [← parts.2, slotRange_eq_slotChunk, parts.1]
+      rfl
+
+theorem steerPrograms_range (key : InputMacKey) (input : AffineInput) (wanted : BaseField)
+    (hash : BitVec 384) (row : BitAdaptor.Ciphertext) (index : FixedKeyIndex)
+    (label range : Block)
+    (requested : steerPrograms key input wanted hash row index = some (label, range)) :
+    range = steeredChunk row wanted hash index ^^^ label := by
+  by_cases atGate : index.adaptor = CurveAdaptor.x7 ∧ index.position = 0
+  · obtain ⟨adaptor, position, slot⟩ := index
+    obtain ⟨rfl, rfl⟩ := atGate
+    cases slot with
+    | hash chunk =>
+      rw [steerPrograms_hash] at requested
+      cases bit : inputBits input .x7 0 with
+      | true => rw [bit, if_pos rfl] at requested; exact absurd requested (by simp)
+      | false =>
+        rw [bit, if_neg Bool.false_ne_true] at requested
+        have parts : selectedLabel key input .x7 0 = label ∧
+            slotRange (.hash chunk) hash 0 (selectedLabel key input .x7 0) = range := by
+          simpa using requested
+        rw [← parts.2, slotRange_eq_slotChunk, parts.1]
+        rfl
+    | pad chunk =>
+      rw [steerPrograms_pad] at requested
+      cases bit : inputBits input .x7 0 with
+      | false => rw [bit, if_neg Bool.false_ne_true] at requested; exact absurd requested (by simp)
+      | true =>
+        rw [bit, if_pos rfl] at requested
+        have parts : selectedLabel key input .x7 0 = label ∧
+            slotRange (.pad chunk) 0 (BitAdaptor.fieldBytes wanted ^^^ row)
+              (selectedLabel key input .x7 0) = range := by simpa using requested
+        rw [← parts.2, slotRange_eq_slotChunk, parts.1]
+        rfl
+  · rw [steerPrograms_other key input wanted hash row index atGate] at requested
+    exact absurd requested (by simp)
+
+theorem steerPrograms_label (key : InputMacKey) (input : AffineInput) (wanted : BaseField)
+    (hash : BitVec 384) (row : BitAdaptor.Ciphertext) (index : FixedKeyIndex)
+    (label range : Block)
+    (requested : steerPrograms key input wanted hash row index = some (label, range)) :
+    label = selectedLabel key input .x7 0 := by
+  by_cases atGate : index.adaptor = CurveAdaptor.x7 ∧ index.position = 0
+  · obtain ⟨adaptor, position, slot⟩ := index
+    obtain ⟨rfl, rfl⟩ := atGate
+    cases slot with
+    | hash chunk =>
+      rw [steerPrograms_hash] at requested
+      cases bit : inputBits input .x7 0 with
+      | true => rw [bit, if_pos rfl] at requested; exact absurd requested (by simp)
+      | false =>
+        rw [bit, if_neg Bool.false_ne_true] at requested
+        have parts : selectedLabel key input .x7 0 = label ∧
+            slotRange (.hash chunk) hash 0 (selectedLabel key input .x7 0) = range := by
+          simpa using requested
+        exact parts.1.symm
+    | pad chunk =>
+      rw [steerPrograms_pad] at requested
+      cases bit : inputBits input .x7 0 with
+      | false => rw [bit, if_neg Bool.false_ne_true] at requested; exact absurd requested (by simp)
+      | true =>
+        rw [bit, if_pos rfl] at requested
+        have parts : selectedLabel key input .x7 0 = label ∧
+            slotRange (.pad chunk) 0 (BitAdaptor.fieldBytes wanted ^^^ row)
+              (selectedLabel key input .x7 0) = range := by simpa using requested
+        exact parts.1.symm
+  · rw [steerPrograms_other key input wanted hash row index atGate] at requested
+    exact absurd requested (by simp)
+
+/-- **The charge of the steering hop, in the concrete game terms.** The selected label is a
+uniform block the first stage never reads, and the bad event of the hop names three label
+values per point the first stage pinned -- summed over the indices, not multiplied by their
+number. So the whole hop costs `3 q₁ / 2 ^ 128`, against the reserved
+`steeringStep = 8 q / 2 ^ 128 + 6 / 2 ^ 128`. -/
+theorem uniform_keyLabel_steeringBlocked_le (assigns : FamilyAssignment)
+    (injective : FamilyInjective assigns) (budget : Nat)
+    (small : familyPinnedCount assigns ≤ budget) (input : AffineInput)
+    (outputs : GateValues BaseField) (rows : GateValues BitAdaptor.Ciphertext)
+    (fibers : GateValues (BitVec 384)) (wanted : BaseField) (hash : BitVec 384) :
+    (PMF.uniformOfFintype InputMacKey).toOuterMeasure
+        {key | steeringBlocked assigns (selectedPrograms key input outputs rows fibers)
+          (steerPrograms key input wanted hash (rows .x7 0))} ≤
+      3 * budget / 2 ^ 128 := by
+  refine le_trans (MeasureTheory.measure_mono
+    (show {key : InputMacKey |
+        steeringBlocked assigns (selectedPrograms key input outputs rows fibers)
+          (steerPrograms key input wanted hash (rows .x7 0))} ⊆
+      {key : InputMacKey | ∃ index : FixedKeyIndex,
+        keyLabel key (adaptorCoordinate .x7) 0 (inputBits input .x7 0) ∈
+            pinnedDomain (assigns index) ∨
+          selectedChunk outputs rows fibers index ^^^
+              keyLabel key (adaptorCoordinate .x7) 0 (inputBits input .x7 0) ∈
+            pinnedRange (assigns index) ∨
+          steeredChunk (rows .x7 0) wanted hash index ^^^
+              keyLabel key (adaptorCoordinate .x7) 0 (inputBits input .x7 0) ∈
+            pinnedRange (assigns index)} from fun key blocked =>
+      mem_familyLabelHidden_of_blocked assigns _ _
+        (keyLabel key (adaptorCoordinate .x7) 0 (inputBits input .x7 0))
+        (selectedChunk outputs rows fibers) (steeredChunk (rows .x7 0) wanted hash)
+        (fun index other second requested =>
+          (steerPrograms_label key input wanted hash (rows .x7 0) index other second
+            requested).trans (selectedLabel_eq key input .x7 0))
+        (fun index first requested =>
+          selectedPrograms_range key input outputs rows fibers index _ first requested)
+        (fun index second requested =>
+          steerPrograms_range key input wanted hash (rows .x7 0) index _ second requested)
+        blocked)) ?_
+  exact uniform_keyLabel_familyHidden_le assigns injective budget small
+    (selectedChunk outputs rows fibers) (steeredChunk (rows .x7 0) wanted hash)
+    (adaptorCoordinate .x7) 0 (inputBits input .x7 0)
+
 end
 
 end Kriterion.ArgoMAC.Security
