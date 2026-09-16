@@ -28,4 +28,5 @@ import Proof.Retarget
 import Proof.VisibleGame
 import Proof.Chunk
 import Proof.Lazy
+import Proof.Erased
 import Proof.Assembly
