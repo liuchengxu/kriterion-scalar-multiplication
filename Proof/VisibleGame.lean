@@ -167,6 +167,51 @@ def steeredReleasedStageTwo [FieldCertificate] [GroupCertificate] (scalar : NonZ
       outcome.1.1 (checkedScalarMultiplication scalar.value outcome.1.1) outcome.1.2 outputs
       fibers (stageTwoState view outcome.2 table carrier key)).map Prod.fst
 
+/-! ### Off the curve the steering is absent -/
+
+/-- An off-curve input decodes to no point. -/
+theorem decodePoint_of_curveGap [FieldCertificate] (input : AffineInput)
+    (offCurve : curveGap input ≠ 0) : decodePoint input = none := by
+  by_contra defined
+  exact offCurve ((curveGap_eq_zero_iff input).mpr ((decodePoint_defined input).mp defined))
+
+/-- An off-curve input needs no steering: the simulator has no target. -/
+theorem steeringTarget_offCurve [FieldCertificate] [GroupCertificate] (carrier : NonZeroBase)
+    (scalar : NonZeroScalar) (input : AffineInput) (offCurve : curveGap input ≠ 0) :
+    steeringTarget carrier input (checkedScalarMultiplication scalar.value input) = none := by
+  simp [steeringTarget, checkedScalarMultiplication, decodePoint_of_curveGap input offCurve]
+
+/-- With no steering target the simulated second stage is the hybrid one: the simulator
+hands over the honest labels and programs nothing. -/
+theorem simulatedStageTwo_of_noTarget [FieldCertificate] [GroupCertificate]
+    (adversary : Adversary) (parameter : Nat) (auxiliary : Unit) (circuit : Garbling.Public)
+    (input : AffineInput) (output : Option Point) (advState : adversary.State) (state : State)
+    (noTarget : steeringTarget state.carrier input output = none) :
+    simulatedStageTwo adversary parameter auxiliary circuit input output advState state =
+      hybridStageTwo adversary parameter auxiliary circuit input advState state := by
+  unfold simulatedStageTwo hybridStageTwo
+  rw [simulateEncode_eq_map, simulateRequestLaw_none state input output noTarget, PMF.pure_map,
+    PMF.pure_bind]
+  rfl
+
+/-- Off the curve the steered reference second stage is the reference second stage. -/
+theorem steeredReleasedStageTwo_offCurve [FieldCertificate] [GroupCertificate]
+    (scalar : NonZeroScalar) (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (view : View) (key : InputMacKey) (carrier : NonZeroBase) (table : CurveMembership.Table)
+    (outputs : GateValues BaseField)
+    (outcome : (AffineInput × adversary.State) × List Query)
+    (offCurve : curveGap outcome.1.1 ≠ 0) :
+    steeredReleasedStageTwo scalar adversary parameter auxiliary view key carrier table outputs
+        outcome =
+      releasedStageTwo adversary parameter auxiliary view key carrier table outputs outcome := by
+  unfold steeredReleasedStageTwo releasedStageTwo
+  refine congrArg (PMF.bind _) (funext fun fibers => ?_)
+  refine congrArg (PMF.map Prod.fst) ?_
+  unfold selectedSimulatedStageTwo selectedStageTwo
+  exact simulatedStageTwo_of_noTarget adversary parameter auxiliary (table, carrierBits carrier)
+    outcome.1.1 (checkedScalarMultiplication scalar.value outcome.1.1) outcome.1.2 _
+    (steeringTarget_offCurve carrier scalar outcome.1.1 offCurve)
+
 /-- The reference round on uniform coordinates is a two-stage game: the released table is
 the view, the selected outputs of the chosen input are the hidden part. -/
 theorem referenceRound_eq_twoStageGame (bridge : NonZeroBase → BaseField)

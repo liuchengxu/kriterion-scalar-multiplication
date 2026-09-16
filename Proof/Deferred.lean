@@ -99,6 +99,29 @@ theorem twoStageGame_congr {Sample Sample' View Hidden Result Outcome : Type}
   refine tsum_congr fun result => tsum_congr fun pair => ?_
   rw [joint result]
 
+/-- Transfer law with two second stages. The second stages need only agree on the support of
+the joint law of the view and the hidden part, so a comparison may use a different argument
+for different first-stage results -- the off-curve inputs, where the steering is absent, and
+the on-curve ones, where it is the shift of the hidden part. -/
+theorem twoStageGame_congr_support {Sample Sample' View Hidden Result Outcome : Type}
+    (law : PMF Sample) (law' : PMF Sample') (view : Sample → View) (view' : Sample' → View)
+    (rest : Result → Sample → Hidden) (rest' : Result → Sample' → Hidden)
+    (stage1 : View → PMF Result) (stage2 stage2' : View → Hidden → Result → PMF Outcome)
+    (joint : ∀ result, law.map (fun sample => (view sample, rest result sample)) =
+      law'.map (fun sample => (view' sample, rest' result sample)))
+    (stageAgree : ∀ result,
+      ∀ pair ∈ (law.map fun sample => (view sample, rest result sample)).support,
+        stage2 pair.1 pair.2 result = stage2' pair.1 pair.2 result) :
+    twoStageGame law view rest stage1 stage2 = twoStageGame law' view' rest' stage1 stage2' := by
+  ext outcome
+  rw [twoStageGame_apply, twoStageGame_apply]
+  refine tsum_congr fun result => ?_
+  rw [← joint result]
+  refine tsum_congr fun pair => ?_
+  by_cases member : pair ∈ (law.map fun sample => (view sample, rest result sample)).support
+  · rw [stageAgree result pair member]
+  · rw [(PMF.apply_eq_zero_iff _ pair).mpr member, zero_mul, zero_mul]
+
 /-- Deferral law. A two-stage game whose joint law of view and hidden part factors through
 the view is the deferred game. -/
 theorem twoStageGame_eq_deferredGame {Sample View Hidden Result Outcome : Type}
