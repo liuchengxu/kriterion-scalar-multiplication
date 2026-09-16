@@ -27,4 +27,5 @@ import Proof.SimulatedReference
 import Proof.Retarget
 import Proof.VisibleGame
 import Proof.Chunk
+import Proof.Lazy
 import Proof.Assembly
