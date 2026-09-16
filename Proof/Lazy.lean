@@ -16,6 +16,7 @@ fresh input of a compatible permutation is independent of the image that the
 programming erases. Everything here is built on that one bijection.
 -/
 
+import Proof.Chunk
 import Proof.Logged
 import Proof.Uniform
 import Cryptography.Permutation
@@ -1010,6 +1011,122 @@ theorem compatibleLaw_run {Result : Type} {budget : Nat} (index : FixedKeyIndex)
     refine lhs.trans (Eq.trans ((PMF.bind_comm _ _ _).trans ?_) rhs.symm)
     exact congrArg (PMF.bind _)
       (funext fun value => inductionHypothesis value state assign injective)
+
+/-! ### Conditional uniformity -/
+
+/-- The number of points a transcript has pinned. -/
+def pinnedCount (assign : Assignment) : Nat := (pinnedDomain assign).ncard
+
+theorem card_pinnedDomain_eq (assign : Assignment) :
+    Fintype.card (pinnedDomain assign) = pinnedCount assign := by
+  rw [pinnedCount, ← Nat.card_coe_set_eq, Nat.card_eq_fintype_card]
+
+theorem pinnedDomain_update (assign : Assignment) (input value : Block) :
+    pinnedDomain (Function.update assign input (some value)) =
+      insert input (pinnedDomain assign) := by
+  ext other
+  by_cases same : other = input
+  · subst same
+    simp [pinnedDomain]
+  · simp [pinnedDomain, Function.update_of_ne same, same]
+
+theorem pinnedCount_update_le (assign : Assignment) (input value : Block) :
+    pinnedCount (Function.update assign input (some value)) ≤ pinnedCount assign + 1 := by
+  rw [pinnedCount, pinnedDomain_update]
+  exact Set.ncard_insert_le input (pinnedDomain assign)
+
+/-- An injective transcript leaves exactly the values it has not pinned. -/
+theorem card_unused (assign : Assignment) (injective : AssignmentInjective assign) :
+    Fintype.card {value : Block // value ∉ pinnedRange assign} =
+      Fintype.card Block - pinnedCount assign := by
+  have bridge : Fintype.card {value : Block // value ∈ pinnedRange assign} =
+      Fintype.card (pinnedRange assign) := Fintype.card_congr (Equiv.refl _)
+  rw [Fintype.card_subtype_compl (p := fun value => value ∈ pinnedRange assign), bridge,
+    card_pinnedRange assign injective, card_pinnedDomain_eq]
+
+/-- Conditionally on a transcript, the tracked permutation's value at an unpinned input is
+uniform over the values the transcript has not pinned. -/
+theorem compatibleLaw_map_apply (assign : Assignment) (injective : AssignmentInjective assign)
+    (input : Block) (fresh : assign input = none) :
+    ((compatibleLaw assign).map fun permutation => permutation input) = freshValueLaw assign := by
+  have forward := compatibleLaw_forward assign injective input fresh
+    (fun value _ => PMF.pure value)
+  rw [PMF.map, Function.comp_def]
+  refine forward.trans ?_
+  refine (congrArg (PMF.bind _) (funext fun value => PMF.bind_const _ _)).trans ?_
+  exact PMF.bind_pure _
+
+/-- Conditionally on a transcript, the tracked permutation's preimage of an unpinned value is
+uniform over the inputs the transcript has not pinned. -/
+theorem compatibleLaw_map_symm_apply (assign : Assignment)
+    (injective : AssignmentInjective assign) (value : Block)
+    (fresh : value ∉ pinnedRange assign) :
+    ((compatibleLaw assign).map fun permutation => permutation.symm value) =
+      freshInputLaw assign := by
+  have inverse := compatibleLaw_inverse assign injective value fresh
+    (fun input _ => PMF.pure input)
+  rw [PMF.map, Function.comp_def]
+  refine inverse.trans ?_
+  refine (congrArg (PMF.bind _) (funext fun input => PMF.bind_const _ _)).trans ?_
+  exact PMF.bind_pure _
+
+theorem uniform_map_val_apply_le {Value : Type} {predicate : Value → Prop}
+    [Fintype {value // predicate value}] [Nonempty {value // predicate value}] (point : Value) :
+    ((PMF.uniformOfFintype {value // predicate value}).map Subtype.val) point ≤
+      (Fintype.card {value // predicate value} : ENNReal)⁻¹ := by
+  rw [PMF.map_apply]
+  by_cases holds : predicate point
+  · rw [tsum_eq_single ⟨point, holds⟩ fun other different =>
+      if_neg fun same => different (Subtype.ext same.symm), if_pos rfl]
+    exact le_of_eq (PMF.uniformOfFintype_apply _)
+  · refine le_trans (le_of_eq ?_) (zero_le)
+    refine ENNReal.tsum_eq_zero.mpr fun other => if_neg ?_
+    rintro rfl
+    exact holds other.2
+
+/-- A transcript of at most `budget` pinned points leaves the tracked permutation's value at an
+unpinned input uniform over at least `2 ^ 128 - budget` values, so it takes any given value with
+probability at most `1 / (2 ^ 128 - budget)`. -/
+theorem compatibleLaw_apply_le (assign : Assignment) (injective : AssignmentInjective assign)
+    (input : Block) (fresh : assign input = none) (budget : Nat)
+    (small : pinnedCount assign ≤ budget) (value : Block) :
+    ((compatibleLaw assign).map fun permutation => permutation input) value ≤
+      (((2 ^ 128 - budget : Nat) : ENNReal))⁻¹ := by
+  haveI unused := unused_nonempty assign injective input fresh
+  rw [compatibleLaw_map_apply assign injective input fresh, freshValueLaw_eq assign unused]
+  refine le_trans (uniform_map_val_apply_le value) ?_
+  refine ENNReal.inv_le_inv.mpr ?_
+  rw [card_unused assign injective, card_block]
+  exact Nat.cast_le.mpr (Nat.sub_le_sub_left small _)
+
+/-- The same bound for the preimage of an unpinned value. -/
+theorem compatibleLaw_symm_apply_le (assign : Assignment)
+    (injective : AssignmentInjective assign) (value : Block)
+    (fresh : value ∉ pinnedRange assign) (budget : Nat) (small : pinnedCount assign ≤ budget)
+    (input : Block) :
+    ((compatibleLaw assign).map fun permutation => permutation.symm value) input ≤
+      (((2 ^ 128 - budget : Nat) : ENNReal))⁻¹ := by
+  haveI unpinned := unpinned_nonempty assign injective value fresh
+  haveI offDomain : Nonempty {point : Block // point ∉ pinnedDomain assign} := by
+    obtain ⟨witness⟩ := unpinned
+    exact ⟨⟨witness.1, notMem_pinnedDomain witness.2⟩⟩
+  rw [compatibleLaw_map_symm_apply assign injective value fresh,
+    freshInputLaw_eq assign unpinned]
+  refine le_trans (uniform_map_val_apply_le input) ?_
+  refine ENNReal.inv_le_inv.mpr ?_
+  have count : Fintype.card {point : Block // assign point = none} =
+      Fintype.card Block - pinnedCount assign := by
+    have bridge : Fintype.card {point : Block // point ∈ pinnedDomain assign} =
+        Fintype.card (pinnedDomain assign) := Fintype.card_congr (Equiv.refl _)
+    have same : Fintype.card {point : Block // assign point = none} =
+        Fintype.card {point : Block // point ∉ pinnedDomain assign} :=
+      Fintype.card_congr (Equiv.subtypeEquivRight fun point =>
+        ⟨fun none => notMem_pinnedDomain none, fun off => eq_none_of_notMem_pinnedDomain off⟩)
+    rw [same, Fintype.card_subtype_compl (p := fun point => point ∈ pinnedDomain assign), bridge,
+      card_pinnedDomain_eq]
+  rw [count, card_block]
+  exact Nat.cast_le.mpr (Nat.sub_le_sub_left small _)
+
 
 end
 
