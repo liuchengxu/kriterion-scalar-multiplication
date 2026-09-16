@@ -1253,6 +1253,227 @@ theorem lazyRun_pinnedCount {Result : Type} {budget : Nat} (index : FixedKeyInde
     exact inductionHypothesis value state assign output member
 
 
+/-! ### The transcript covers the tracked entries of the log -/
+
+/-- A transcript covers a log when it pins every tracked query the log records: the input of
+each forward entry and the value of each inverse entry.
+
+This is what turns a condition on the transcript into a condition on the log. The steering
+hop needs it in that direction: `compatibleLaw_double` asks that the first stage has neither
+queried the selected label nor used either programmed range, and the simulator's own
+freshness test asks that no entry of the log names one of the four answers the programming
+changes. The second follows from the first exactly because a lazy run pins everything it
+answers. -/
+def TranscriptCovers (index : FixedKeyIndex) (assign : Assignment) (log : List Query) : Prop :=
+  (∀ input, PublicQuery.fixedForward index input ∈ log → input ∈ pinnedDomain assign) ∧
+    ∀ value, PublicQuery.fixedInverse index value ∈ log → value ∈ pinnedRange assign
+
+theorem mem_pinnedRange_of_pinnedInput (assign : Assignment) (value input : Block)
+    (transposed : pinnedInput assign value = some input) : value ∈ pinnedRange assign := by
+  by_cases pinned : ∃ other, assign other = some value
+  · exact pinned
+  · rw [pinnedInput, dif_neg pinned] at transposed
+    exact absurd transposed (by simp)
+
+/-- Pinning a fresh input keeps every value the transcript already pinned. -/
+theorem pinnedRange_update_subset (assign : Assignment) (input value : Block)
+    (fresh : assign input = none) :
+    pinnedRange assign ⊆ pinnedRange (Function.update assign input (some value)) := by
+  rintro other ⟨domain, pin⟩
+  refine ⟨domain, ?_⟩
+  rw [Function.update_of_ne (fun same => by rw [same, fresh] at pin; exact absurd pin (by simp))]
+  exact pin
+
+theorem exists_mem_support_of_mem_support_map {Value Other : Type} (law : PMF Value)
+    (step : Value → Other) {point : Other} (member : point ∈ (law.map step).support) :
+    ∃ value ∈ law.support, step value = point := by
+  rw [PMF.support_map] at member
+  exact member
+
+/-- One lazy answer keeps the transcript injective and covering, and covers its own query. -/
+theorem lazyAnswer_covers (index : FixedKeyIndex) (view : View) (request : Query)
+    (assign : Assignment) (injective : AssignmentInjective assign)
+    (pair : request.Answer × Assignment)
+    (member : pair ∈ (lazyAnswer index view request assign).support) (log : List Query)
+    (covers : TranscriptCovers index assign log) :
+    AssignmentInjective pair.2 ∧ TranscriptCovers index pair.2 (request :: log) := by
+  have untracked (other : Query) (same : pair.2 = assign)
+      (noForward : ∀ input, other ≠ PublicQuery.fixedForward index input)
+      (noInverse : ∀ value, other ≠ PublicQuery.fixedInverse index value) :
+      AssignmentInjective pair.2 ∧ TranscriptCovers index pair.2 (other :: log) := by
+    rw [same]
+    refine ⟨injective, fun input logged => ?_, fun value logged => ?_⟩
+    · rcases List.mem_cons.mp logged with head | tail
+      · exact absurd head.symm (noForward input)
+      · exact covers.1 input tail
+    · rcases List.mem_cons.mp logged with head | tail
+      · exact absurd head.symm (noInverse value)
+      · exact covers.2 value tail
+  cases request with
+  | fixedForward queryIndex domain =>
+    by_cases tracked : queryIndex = index
+    · subst tracked
+      cases pinned : assign domain with
+      | some value =>
+        have lazyEq : lazyAnswer queryIndex view (PublicQuery.fixedForward queryIndex domain)
+            assign = PMF.pure (value, assign) := by
+          simp [lazyAnswer, pinned]
+          rfl
+        rw [lazyEq] at member
+        have same : pair.2 = assign := by rw [eq_of_mem_support_pure member]
+        rw [same]
+        refine ⟨injective, fun input logged => ?_, fun value' logged => ?_⟩
+        · rcases List.mem_cons.mp logged with head | tail
+          · have inputEq : input = domain := by simpa using head
+            rw [inputEq]
+            exact mem_pinnedDomain pinned
+          · exact covers.1 input tail
+        · rcases List.mem_cons.mp logged with head | tail
+          · exact absurd head (by simp)
+          · exact covers.2 value' tail
+      | none =>
+        have lazyEq : lazyAnswer queryIndex view (PublicQuery.fixedForward queryIndex domain)
+            assign = (freshValueLaw assign).map fun value =>
+              (value, Function.update assign domain (some value)) := by
+          simp [lazyAnswer, pinned]
+          rfl
+        rw [lazyEq] at member
+        obtain ⟨value, valueMember, equal⟩ :=
+          exists_mem_support_of_mem_support_map _ _ member
+        haveI unusedNonempty := unused_nonempty assign injective domain pinned
+        have valueFresh : value ∉ pinnedRange assign :=
+          freshValueLaw_support assign unusedNonempty valueMember
+        have same : pair.2 = Function.update assign domain (some value) := by rw [← equal]
+        rw [same]
+        refine ⟨update_injective assign injective domain value valueFresh,
+          fun input logged => ?_, fun value' logged => ?_⟩
+        · rw [pinnedDomain_update]
+          rcases List.mem_cons.mp logged with head | tail
+          · have inputEq : input = domain := by simpa using head
+            exact Set.mem_insert_iff.mpr (Or.inl inputEq)
+          · exact Set.mem_insert_of_mem _ (covers.1 input tail)
+        · rcases List.mem_cons.mp logged with head | tail
+          · exact absurd head (by simp)
+          · exact pinnedRange_update_subset assign domain value pinned (covers.2 value' tail)
+    · have lazyEq : lazyAnswer index view (PublicQuery.fixedForward queryIndex domain) assign =
+          PMF.pure (publicAnswer view (PublicQuery.fixedForward queryIndex domain), assign) := by
+        simp only [lazyAnswer, if_neg tracked]
+        rfl
+      rw [lazyEq] at member
+      exact untracked _ (by rw [eq_of_mem_support_pure member])
+        (fun input equal =>
+          tracked (show queryIndex = index ∧ domain = input by simpa using equal).1)
+        (fun value equal => absurd equal (by simp))
+  | fixedInverse queryIndex range =>
+    by_cases tracked : queryIndex = index
+    · subst tracked
+      cases transposed : pinnedInput assign range with
+      | some domain =>
+        have lazyEq : lazyAnswer queryIndex view (PublicQuery.fixedInverse queryIndex range)
+            assign = PMF.pure (domain, assign) := by
+          simp [lazyAnswer, transposed]
+          rfl
+        rw [lazyEq] at member
+        have same : pair.2 = assign := by rw [eq_of_mem_support_pure member]
+        rw [same]
+        refine ⟨injective, fun input logged => ?_, fun value logged => ?_⟩
+        · rcases List.mem_cons.mp logged with head | tail
+          · exact absurd head (by simp)
+          · exact covers.1 input tail
+        · rcases List.mem_cons.mp logged with head | tail
+          · have valueEq : value = range := by simpa using head
+            rw [valueEq]
+            exact mem_pinnedRange_of_pinnedInput assign range domain transposed
+          · exact covers.2 value tail
+      | none =>
+        have lazyEq : lazyAnswer queryIndex view (PublicQuery.fixedInverse queryIndex range)
+            assign = (freshInputLaw assign).map fun domain =>
+              (domain, Function.update assign domain (some range)) := by
+          simp [lazyAnswer, transposed]
+          rfl
+        rw [lazyEq] at member
+        obtain ⟨domain, domainMember, equal⟩ :=
+          exists_mem_support_of_mem_support_map _ _ member
+        have rangeFresh : range ∉ pinnedRange assign :=
+          notMem_pinnedRange_of_pinnedInput_eq_none assign injective transposed
+        haveI unpinnedNonempty := unpinned_nonempty assign injective range rangeFresh
+        have freshDomain : assign domain = none :=
+          freshInputLaw_support assign unpinnedNonempty domainMember
+        have same : pair.2 = Function.update assign domain (some range) := by rw [← equal]
+        rw [same]
+        refine ⟨update_injective assign injective domain range rangeFresh,
+          fun input logged => ?_, fun value logged => ?_⟩
+        · rcases List.mem_cons.mp logged with head | tail
+          · exact absurd head (by simp)
+          · rw [pinnedDomain_update]
+            exact Set.mem_insert_of_mem _ (covers.1 input tail)
+        · rcases List.mem_cons.mp logged with head | tail
+          · have valueEq : value = range := by simpa using head
+            exact ⟨domain, by rw [Function.update_self, valueEq]⟩
+          · exact pinnedRange_update_subset assign domain range freshDomain (covers.2 value tail)
+    · have lazyEq : lazyAnswer index view (PublicQuery.fixedInverse queryIndex range) assign =
+          PMF.pure (publicAnswer view (PublicQuery.fixedInverse queryIndex range), assign) := by
+        simp only [lazyAnswer, if_neg tracked]
+        rfl
+      rw [lazyEq] at member
+      exact untracked _ (by rw [eq_of_mem_support_pure member])
+        (fun input equal => absurd equal (by simp))
+        (fun value equal =>
+          tracked (show queryIndex = index ∧ range = value by simpa using equal).1)
+  | encForward queryIndex domain =>
+    have lazyEq : lazyAnswer index view (PublicQuery.encForward queryIndex domain) assign =
+        PMF.pure (publicAnswer view (PublicQuery.encForward queryIndex domain), assign) := rfl
+    rw [lazyEq] at member
+    exact untracked _ (by rw [eq_of_mem_support_pure member])
+      (fun input => by simp) (fun value => by simp)
+  | encInverse queryIndex range =>
+    have lazyEq : lazyAnswer index view (PublicQuery.encInverse queryIndex range) assign =
+        PMF.pure (publicAnswer view (PublicQuery.encInverse queryIndex range), assign) := rfl
+    rw [lazyEq] at member
+    exact untracked _ (by rw [eq_of_mem_support_pure member])
+      (fun input => by simp) (fun value => by simp)
+  | hash point =>
+    have lazyEq : lazyAnswer index view (PublicQuery.hash point) assign =
+        PMF.pure (publicAnswer view (PublicQuery.hash point), assign) := rfl
+    rw [lazyEq] at member
+    exact untracked _ (by rw [eq_of_mem_support_pure member])
+      (fun input => by simp) (fun value => by simp)
+
+/-- A lazy run pins every tracked query its log records, and keeps its transcript
+injective. -/
+theorem lazyRun_covers {Result : Type} {budget : Nat} (index : FixedKeyIndex)
+    (program : OracleProgram (publicOracleSpec FixedKeyIndex Garbling.EncIndex) Result budget) :
+    ∀ (state : State) (assign : Assignment), AssignmentInjective assign →
+      TranscriptCovers index assign state.log →
+        ∀ output ∈ (lazyRun index program state assign).support,
+          AssignmentInjective output.2 ∧ TranscriptCovers index output.2 output.1.2 := by
+  induction program with
+  | pure distribution =>
+    intro state assign injective covers output member
+    rw [lazyRun, PMF.support_map] at member
+    obtain ⟨_, _, rfl⟩ := member
+    exact ⟨injective, covers⟩
+  | query request next inductionHypothesis =>
+    intro state assign injective covers output member
+    rw [lazyRun, PMF.support_bind] at member
+    simp only [Set.mem_iUnion] at member
+    obtain ⟨pair, pairMember, member⟩ := member
+    obtain ⟨stepInjective, stepCovers⟩ :=
+      lazyAnswer_covers index state.view request assign injective pair pairMember state.log covers
+    exact inductionHypothesis pair.1 { state with log := request :: state.log } pair.2
+      stepInjective stepCovers output member
+  | sample distribution next inductionHypothesis =>
+    intro state assign injective covers output member
+    rw [lazyRun, PMF.support_bind] at member
+    simp only [Set.mem_iUnion] at member
+    obtain ⟨value, _, member⟩ := member
+    exact inductionHypothesis value state assign injective covers output member
+
+/-- The empty transcript covers the empty log. -/
+theorem transcriptCovers_empty (index : FixedKeyIndex) :
+    TranscriptCovers index (fun _ => none) [] :=
+  ⟨fun _ logged => absurd logged (by simp), fun _ logged => absurd logged (by simp)⟩
+
 /-! ### The per-entry charge the steering hop consumes -/
 
 /-- One log entry can pin the image of an unpinned input to one value, and the conditional law
