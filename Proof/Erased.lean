@@ -253,6 +253,75 @@ theorem publicAnswer_steeringHidden (first second : View) (index : FixedKeyIndex
     exact congrArg (fun rest : PermutationOracle Garbling.EncIndex Block ×
       (BaseField → Block × Block) => randomOracleAnswer rest.2 value) sameRest
 
+/-! ### The union bound over a log, keyed to each entry's own index -/
+
+/-- A union bound over a finite family of tracked indices whose per-entry bad sets are empty
+off the entry's own index.
+
+The steering gate is programmed at three fixed-key indices (its hash slots) or at two (its
+pad slots), and the conditional-uniformity tool tracks one index at a time. A permutation
+query names exactly one index, so its bad set at the other tracked indices is empty; summing
+the per-index bounds therefore costs one charge per *log entry*, not one per index. Charging
+per index instead would cost three times as much and would not fit the hop's share of the
+budget. -/
+theorem toOuterMeasure_exists_mem_keyed_le {Sample Entry Index : Type} [DecidableEq Index]
+    (law : PMF Sample) (indices : Finset Index) (entries : List Entry)
+    (key : Entry → Option Index) (bad : Index → Entry → Set Sample) (charge : ENNReal)
+    (each : ∀ index ∈ indices, ∀ entry ∈ entries, key entry = some index →
+      law.toOuterMeasure (bad index entry) ≤ charge)
+    (off : ∀ index ∈ indices, ∀ entry ∈ entries, key entry ≠ some index →
+      bad index entry = ∅) :
+    law.toOuterMeasure
+        {sample | ∃ index ∈ indices, ∃ entry ∈ entries, sample ∈ bad index entry} ≤
+      entries.length * charge := by
+  induction entries with
+  | nil =>
+    have empty : {sample | ∃ index ∈ indices, ∃ entry ∈ ([] : List Entry),
+        sample ∈ bad index entry} = (∅ : Set Sample) := by
+      ext sample
+      simp
+    rw [empty, List.length_nil, Nat.cast_zero, zero_mul]
+    exact le_of_eq (MeasureTheory.measure_empty (μ := law.toOuterMeasure))
+  | cons entry rest inductionHypothesis =>
+    have split : {sample | ∃ index ∈ indices, ∃ entry' ∈ entry :: rest,
+          sample ∈ bad index entry'} =
+        (⋃ index ∈ indices, bad index entry) ∪
+          {sample | ∃ index ∈ indices, ∃ entry' ∈ rest, sample ∈ bad index entry'} := by
+      ext sample
+      simp only [List.mem_cons, Set.mem_ofPred_eq, Set.mem_union, Set.mem_iUnion]
+      constructor
+      · rintro ⟨index, member, entry', head | tail, hit⟩
+        · exact Or.inl ⟨index, member, head ▸ hit⟩
+        · exact Or.inr ⟨index, member, entry', tail, hit⟩
+      · rintro (⟨index, member, hit⟩ | ⟨index, member, entry', tail, hit⟩)
+        · exact ⟨index, member, entry, Or.inl rfl, hit⟩
+        · exact ⟨index, member, entry', Or.inr tail, hit⟩
+    have head : law.toOuterMeasure (⋃ index ∈ indices, bad index entry) ≤ charge := by
+      refine le_trans (MeasureTheory.measure_biUnion_finset_le indices _) ?_
+      have pointwise : ∀ index ∈ indices,
+          law.toOuterMeasure (bad index entry) ≤
+            (if key entry = some index then charge else 0) := by
+        intro index member
+        by_cases keyed : key entry = some index
+        · rw [if_pos keyed]
+          exact each index member entry List.mem_cons_self keyed
+        · rw [if_neg keyed, off index member entry List.mem_cons_self keyed]
+          exact le_of_eq (MeasureTheory.measure_empty (μ := law.toOuterMeasure))
+      refine le_trans (Finset.sum_le_sum pointwise) ?_
+      cases key entry with
+      | none => simp
+      | some target =>
+        simp only [Option.some_inj, Finset.sum_ite_eq]
+        split
+        · exact le_rfl
+        · exact zero_le
+    rw [split, List.length_cons, Nat.cast_succ, add_mul, one_mul,
+      add_comm ((rest.length : ENNReal) * charge) charge]
+    refine le_trans (MeasureTheory.measure_union_le _ _) ?_
+    exact add_le_add head (inductionHypothesis
+      (fun index member entry' tail => each index member entry' (List.mem_cons_of_mem _ tail))
+      (fun index member entry' tail => off index member entry' (List.mem_cons_of_mem _ tail)))
+
 /-! ### The empty transcript, and one index of a uniform family -/
 
 /-- The transcript a run starts from pins nothing. -/
