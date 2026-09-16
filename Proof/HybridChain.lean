@@ -477,21 +477,27 @@ theorem advantage_firstView_le {Data : Type} (adversary : Adversary) (parameter 
 
 /-! ### The second oracle hop: the second stage keeps only the selected programming -/
 
-/-- Two views answer a query identically when they agree at the query's own index. -/
-theorem publicAnswer_permutation_congr (first second : PermutationOracle FixedKeyIndex Block)
-    (rest : PermutationOracle Garbling.EncIndex Block × (BaseField → Block × Block))
-    (query : Query)
+/-- Two views answer a query identically when their unread halves agree and their
+fixed-key permutations agree at the query's own index. -/
+theorem publicAnswer_view_congr (firstView secondView : View) (query : Query)
+    (sameRest : firstView.2 = secondView.2)
     (forward : ∀ index value, query = .fixedForward index value →
-      first.permutation index value = second.permutation index value)
+      firstView.1.permutation index value = secondView.1.permutation index value)
     (inverse : ∀ index value, query = .fixedInverse index value →
-      (first.permutation index).symm value = (second.permutation index).symm value) :
-    publicAnswer (first, rest) query = publicAnswer (second, rest) query := by
+      (firstView.1.permutation index).symm value = (secondView.1.permutation index).symm value) :
+    publicAnswer firstView query = publicAnswer secondView query := by
   cases query with
   | fixedForward index value => exact forward index value rfl
   | fixedInverse index value => exact inverse index value rfl
-  | encForward _ _ => rfl
-  | encInverse _ _ => rfl
-  | hash _ => rfl
+  | encForward index value =>
+    exact congrArg (fun rest : PermutationOracle Garbling.EncIndex Block ×
+      (BaseField → Block × Block) => rest.1.permutation index value) sameRest
+  | encInverse index value =>
+    exact congrArg (fun rest : PermutationOracle Garbling.EncIndex Block ×
+      (BaseField → Block × Block) => (rest.1.permutation index).symm value) sameRest
+  | hash value =>
+    exact congrArg (fun rest : PermutationOracle Garbling.EncIndex Block ×
+      (BaseField → Block × Block) => randomOracleAnswer rest.2 value) sameRest
 
 /-- Programming reads one index only through its own request. -/
 theorem programIndices_congr_at (first second : Programs)
@@ -646,7 +652,7 @@ theorem publicAnswer_selectedPrograms (oracle : PermutationOracle FixedKeyIndex 
         programIndices_eq_programmed _ oracle index _ _ rfl,
         programIndices_none _ oracle index
           (selectedPrograms_unselected key input _ _ digests index selected)⟩
-  refine publicAnswer_permutation_congr _ _ rest query ?_ ?_
+  refine publicAnswer_view_congr (_, rest) (_, rest) query rfl ?_ ?_
   · rintro index value rfl
     rcases atIndex index rfl with same | ⟨missing, first, second⟩
     · rw [same]

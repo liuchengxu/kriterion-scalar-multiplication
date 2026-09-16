@@ -22,3 +22,4 @@ import Proof.Reparametrise
 import Proof.DeferredSteering
 import Proof.HybridChain
 import Proof.HybridReference
+import Proof.SimulatedChain
