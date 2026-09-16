@@ -34,6 +34,22 @@ of hop and the accounting, machine-checked at `K = 10` and `ε₀ < 2^-119`), an
 algebra is proved (`Proof/Reparametrise.lean`). **P10 itself is still open: the eight steps of §4
 are not yet chained, so `hybridGame_close_to_idealGame` still carries the single `sorry`.**
 
+Slice 3h did **steps 1 and 3 of §4 on the `H` side** (`Proof/HybridChain.lean`): the hybrid game
+is reparametrised exactly into the reference table of fresh per-gate digests and pads (step 1),
+and the two oracle hops of step 3 are charged, giving the machine-checked
+
+```lean
+theorem advantage_hybridGame_digestedReference_le :
+    advantage (idealGame … (hybridSimulator scalar) …) (digestedReference scalar …)
+      ≤ 4 * (q₁ + q₂) / 2 ^ 128
+```
+
+where `digestedReference` is `R(c/s)` **except** that its mask is still the tape's nonzero
+`curveMask` and its fiber sample is still the fresh 384-bit digest family. **Step 2 on the `H`
+side (the two one-time replacements) and the identification of `digestedReference` with
+`referenceGame` are NOT done**, so `hybridGame_close_to_idealGame` still carries the single
+`sorry`. See "What P10 still has to do" and the constant assignment below.
+
 ## 1. The correction that drives the architecture
 
 The slice-3b analysis of the three cases (A off-curve, B on-curve/bit false, C on-curve/bit
@@ -283,19 +299,108 @@ instead of the whole key; `uniform_bind_setKeyLabel` / `uniform_keyLabel_mem` ar
   256-bit pad per gate (`freshEquiv`), which is the interface `hashFibers_total_difference` of step
   2 consumes. **No constant moved.**
 
-**What P10 still has to do.** In order: (i) split the tape with `uniform_bind_setOracle` so the
-oracle is sampled after the key, then apply `uniform_programFamily (usedLabel key)` and
-`curveGarble_programFamily` to turn `H` into `H'` (step 1, exact); (ii) hop `H'` to `H''` by
-replacing the programmed stage-1/stage-2 views with `π°` — two `advantage_bind_le_bad` hops whose
-bad mass is bounded by `firstStage_hidden_le` and `secondStage_hidden_le` with
-`publicAnswer_programIndices_single` supplying the "views agree off the hidden set" side (step 3);
-(iii) push the fresh family to uniform raw coordinates through `freshEquiv`, `mask_total_difference`
-and `hashFibers_total_difference` with `advantage_bind_le_totalDifference` (step 2); (iv) the same
-three for the `S` side (steps 4–6), with `steer_eq_map` / `programAll_steerRequests` for the
-steering; (v) step 7 via `twoStageGame_congr`, `visibleCoordinates_offCurve` /
-`visibleCoordinates_onCurve`, `steer_programSelected`, `programIndices_steerPrograms` and
-`uniformHashFibers_setSteering`; (vi) chain with `advantage_trans` and close with
-`workPerAdvantage_of_chain`.
+**Corrections from slice 3h.**
+
+* **The one-time terms are paid TWICE, once per side of the chain.** §4 listed the mask
+  replacement (`2/p`) and the tensorised digest replacement (`1270·p/2^384`) only under the `H`
+  side's step 2, but the `S` side's step 7 also has to turn *its* reparametrisation's fresh
+  secrets into `R(u)`'s uniform `Coordinates` plus fiber sample, which is the same pair of
+  replacements. The chain reaches `S` only through `R(b)` (the hybrid-side bad bounds are
+  unsound — see slice 3g), so there is no way to share them. `chainOneTime` is therefore now
+  `sideOneTime + sideOneTime + 6/2^128` with `sideOneTime = 2/p + 1270·(p/2^384)`, and
+  `chainOneTime_lt` is restated at `2^-118` (it was `2^-119`; the doubled value is `2566/2^130`
+  and `2^-119 = 2048/2^130`, so the old bound was **false** for the doubled terms).
+  `chainOneTime_le : chainOneTime ≤ 2^-101` and `workPerAdvantage_of_chain` are unchanged, so
+  `K ≤ 10`, `ε₀ ≤ 2^-101` and the arithmetic tail still close the obligation.
+* **`publicAnswer_programIndices_single` does not apply to the hops as §4 describes them.** Its
+  `others : ∀ index' ≠ index, programs index' = none` hypothesis is false for a *family*
+  programming, and both hops of step 3 program all 6350 indices at once. The right statement is
+  per-query: a public query names exactly one fixed-key index, so only that index's own request
+  matters (`publicAnswer_usedPrograms`, `publicAnswer_selectedPrograms`, both built on
+  `publicAnswer_permutation_congr` + `programIndices_congr_at`). The hidden-set cardinality and
+  hence the constant are unchanged.
+* **An identical-until-bad hop of this chain needs a bad event over the *outcome*, not over the
+  sample.** `advantage_bind_le_bad` charges `bad ⊆ Sample`, but each hop's bad event is "some
+  entry of the log the differing stage produces is bad", and that log is part of the outcome.
+  `advantage_bind_le_jointBad` (new, in `Proof/Chain.lean`) charges the bad mass under the joint
+  law of the sample and the differing step's outcome; it specialises to `advantage_bind_le_bad`
+  on the joint law, so nothing about the accounting changes.
+* **The reference game's programming really is the first hop's programming, with no slack.** At a
+  gate whose slot reads the *selected* label, `selectedPrograms` and `usedPrograms` are the same
+  request (`selectedPrograms_selected`): at a `false` gate the hash slots both take the digest
+  chunks, and at a `true` gate the pad slots both take `pads`, because the released row
+  `pad ⊕ fieldBytes(slope + hash)` cancels against `fieldBytes` of the selected output
+  `slope + hash`. At the other slots `selectedPrograms` is `none`, so the two views differ
+  exactly at the *unselected* labels, which is what the second hop charges.
+* **`hybridStageTwo`'s `unread` has to be re-proved for the state whose view is itself programmed
+  at the selected labels** (`selectedStageTwo_unread`): the programming is a function of the key,
+  and `selectedPrograms_setKeyLabels` is what makes it independent of the replaced labels. The
+  slice-3g `hybridStageTwo_unread` alone is not enough.
+* **`rw` cannot rewrite a lemma whose metavariable would capture a bound variable.** Rewriting
+  `hybridData.bind ?continuation` under `fun key => …` fails with "did not find an occurrence"
+  even though the pattern is visibly present. Go under the binder first with
+  `congrArg (PMF.bind _) (funext fun key => ?_)` and rewrite at the top level. The same applies
+  to every `bind`-splitting lemma of this file, which is why `bind_pairLaw` and `bind_stageLaw`
+  are always applied with their continuation given **explicitly** (that makes the match
+  first-order).
+
+**What P10 still has to do.** Steps 1 and 3 of the `H` side are done (slice 3h,
+`Proof/HybridChain.lean`). In order, what is left:
+
+(i) **`H` side, step 2** (the two one-time replacements). `digestedReference` samples the mask
+from `NonZeroBase` and uses the fresh 384-bit digest family both as the table's hashes and as the
+second stage's fiber sample; `R(c/s)` samples `raw : Coordinates` uniformly and samples
+`uniformHashFibers o` in the second stage. Three pieces are needed: (a) float the mask out of
+`hybridData` and apply `advantage_bind_le_totalDifference` with `mask_total_difference` (`2/p`);
+(b) apply `advantage_bind_le_totalDifference` with `hashFibers_total_difference` on the digest
+family (`1270·p/2^384`), then `bind_congr_support` to replace `digestField fibers` by the
+separately sampled field family (they agree on the support of `uniformHashFibers`); (c) **defer
+the fiber sample past the first stage** (`PMF.bind_comm`, the table needs only the field family)
+and then move from `uniformHashFibers (raw.hash)` to `uniformHashFibers o`. Step (c) is the one
+piece with no existing tool: `o a i = raw.hash a i` at every gate whose bit is `false`, and the
+fibers of the `true` gates are read by nothing (`selectedPrograms` is `none` at their hash slots),
+so what is needed is a **marginal lemma for a product law**: if two `productPMF` families agree
+off a finite set of coordinates and the continuation is invariant under `Function.update` at those
+coordinates, the two binds are equal. It is a `Finset` induction using `productPMF_bind_update`
+one coordinate at a time, in the style of `totalDifference_productPMF`.
+
+(ii) **`H` side, the last identification**: `referenceGame (fun c => ((mulScalar scalar).symm c).value)`
+unfolded into the conditioned two-stage shape, exactly as `hybridGame_eq_hybridOn` /
+`hybridGame_eq_used` do for the hybrid game (`run_idealOracle_support` + `eq_stageTwoState` +
+`map_loggedOutcome_firstState`), plus `map_fst_loggedOutcome` to match `referenceStage2`'s
+`PMF.map Prod.fst` against `selectedStageTwo`'s `map Prod.fst ∘ map loggedOutcome`.
+
+(iii) **`S` side, steps 4–6**: the same three hops for the simulated game, with `steer_eq_map` /
+`programAll_steerRequests` for the steering. `advantage_firstView_le` and `advantage_secondView_le`
+are stated generically in the key-free data `Data`, so they are reusable verbatim provided the
+`S` side's first stage is put in the same `loggedFirstStage … (circuit datum) (view datum)` shape.
+
+(iv) **step 7** via `twoStageGame_congr`, `visibleCoordinates_offCurve` / `visibleCoordinates_onCurve`,
+`steer_programSelected`, `programIndices_steerPrograms` and `uniformHashFibers_setSteering`.
+
+(v) chain with `advantage_trans` and close with `workPerAdvantage_of_chain`.
+
+**The constant assignment (slice 3h).** The budget is
+`10·(q₁+q₂)/2^128 + chainOneTime`, `chainOneTime = sideOneTime + sideOneTime + 6/2^128`,
+`sideOneTime = 2/p + 1270·(p/2^384)`.
+
+| step | which side | per-query | one-time | status |
+|---|---|---|---|---|
+| 1 (reparametrise `π`) | H | 0 | 0 | **done** (`hybridGame_eq_fresh`) |
+| 3, hop A (stage 1 → `π°`) | H | `2q₁/2^128 ≤ 2q/2^128` | 0 | **done** (`advantage_firstView_le`) |
+| 3, hop B (stage 2 → selected labels) | H | `2q/2^128` | 0 | **done** (`advantage_secondView_le`) |
+| 2 (mask `F*→F`) | H | 0 | `2/p` | open |
+| 2 (1270 digests → field + fiber) | H | 0 | `1270·p/2^384` | open |
+| 4 (reparametrise `π`) | S | 0 | 0 | open |
+| 5 (stage 1 → `π°`) | S | `2q/2^128` | 0 | open |
+| 6 (stage 2 unselected) | S | `2q/2^128` | 0 | open |
+| 7 (`swap(r₁,r₂)` reparametrisation) | S | `2q/2^128` | `6/2^128` | open |
+| 7 (mask and digests of the `S` side) | S | 0 | `sideOneTime` | open |
+
+So **this slice consumed `4·(q₁+q₂)/2^128` of the per-query budget and none of the one-time
+budget**, and it leaves `6·(q₁+q₂)/2^128 + sideOneTime` (for the `H` side's own step 2) plus
+`sideOneTime + 6/2^128` (for the `S` side) — i.e. the whole of `chainOneTime` — for the
+remaining slices. The two shares sum to exactly `10·(q₁+q₂)/2^128 + chainOneTime`.
 
 Two things the slice-3b analysis had that this chain does **not** need: hiding all 1270
 unselected-label values by an explicit shift (absorbed by `P4`), and the `(2^128 − q)`
@@ -316,7 +421,7 @@ probability exactly `k/2^128`).
 | P8 | arithmetic tail `ε ≤ K q/2^128 + ε₀`, `K ≤ 2^28`, `ε₀ ≤ 2^-101` ⇒ `WorkPerAdvantage 100 (q+1) ε`; `advantage ≤ 1` | `Proof/Reference.lean`: `workPerAdvantage_of_le`, `advantage_le_one` | **done** |
 | P9a | `R(b)` as a `PMF Bool`: `programIndices` (unconditional partial programming), `gateKey`/`selectedLabel`/`slotRange`/`tableRow`, `selectedPrograms`, `HashFibers`/`uniformHashFibers`, `programSelected`, `referenceStage2`, `referenceGame`; `run_idealOracle_support` (a run changes only the log); `selectedPrograms_hash`/`_pad`/`_label` | `Proof/ReferenceGame.lean` | **done** |
 | P9b | unfold `idealGame` for `hybridSimulator` and `simulator` into the shape of §4, marginalize unused tape fields, and discharge the `unread` hypothesis of `secondStage_hidden_le` for every second stage: the labels one input leaves unselected (`unreadLabelBits`) are read by no game, because `encodeAffine`, `selectedLabel` and `selectedPrograms` read only the selected label, the reference table ignores the key entirely, and an ideal-oracle run reads only the view and the log | `Proof/GameShape.lean`: `inputLabelBits`, `unreadLabelBits`, `keyLabel_setKeyLabels_of_ne`, `selectedLabel_setKeyLabels`, `encodeAffine_setKeyLabels`, `Coordinates.table_key`, `firstStage_key_congr`, `map_fst_run_congr`, `programAll_view_congr`, `steerRequestLaw`, `steer_eq_map`, `steer_visible_congr`, `stageTwoState`, `decisionLaw`, `bind_decisionLaw`, `hybridStageTwo`/`_unread`, `referenceStageTwo`/`_unread`, `simulatedStageTwo`/`_unread`, `setCurve`, `uniform_bind_setCurve`, `setOracle`, `uniform_bind_setOracle`, `simulatedGame_eq`; `Proof/Privacy.lean`: `hybridGame_eq` | **done** |
-| P10 | assemble §4 with `advantageTriangle` / `event_difference_le` and P8 | assembly layer `Proof/Chain.lean`: `advantage_bind_le_bad`, `advantage_bind_le_totalDifference`, `advantage_bind_le_of_le`, `advantage_trans`, `chainOneTime`, `chainOneTime_lt`, `workPerAdvantage_of_chain`; first hop's algebra `Proof/Reparametrise.lean`: `usedLabel`, `programFamily_apply`, `freshDigest`/`freshPad`/`freshHash`, `curveGarble_programFamily`, `freshEquiv`, `uniform_map_freshEquiv` | **open** (steps 1–8 not chained) |
+| P10 | assemble §4 with `advantageTriangle` / `event_difference_le` and P8 | assembly layer `Proof/Chain.lean`: `advantage_bind_le_bad`, `advantage_bind_le_jointBad`, `advantage_bind_le_totalDifference`, `advantage_bind_le_of_le`, `advantage_trans`, `sideOneTime`, `chainOneTime`, `chainOneTime_lt`, `workPerAdvantage_of_chain`; first hop's algebra `Proof/Reparametrise.lean`: `usedLabel`, `programFamily_apply`, `freshDigest`/`freshPad`/`freshHash`, `curveGarble_programFamily`, `freshEquiv`, `uniform_map_freshEquiv`; `H`-side steps 1 and 3 `Proof/HybridChain.lean`: `setKey`/`uniform_bind_setKey`, `hybridTwoStage`, `hybridOn`, `hybridGame_eq_hybridOn`, `hybridGame_eq_split`, `freshValue`, `usedPrograms`, `programFamily_eq_programIndices`, `uniform_bind_usedPrograms`, `hybridFresh`, `hybridGame_eq_fresh`, `queryLabelIndex`, `usedHidden`, `UsedBad`, `usedLabel_eq_keyLabel`, `publicAnswer_usedPrograms`, `bind_pairLaw`, `advantage_firstView_le`, `publicAnswer_permutation_congr`, `programIndices_congr_at`, `digestedRaw`, `selectedPrograms_selected`/`_unselected`, `unreadQueryIndex`, `SelectedBad`, `publicAnswer_selectedPrograms`, `selectedStageTwo`/`_unread`/`_length`, `usedStageTwo`/`_agree`, `bind_stageLaw`, `secondBad`, `secondBad_mass_le`, `advantage_secondView_le`, `hybridData`, `digestedReference`, `advantage_hybridGame_digestedReference_le` | **open** (H steps 1, 3 done; H step 2, the `R` identification and the whole `S` side are not) |
 
 The assembly layer of P10 lives in `Proof/Chain.lean` and `Proof/Reparametrise.lean`; the game
 shapes and the `unread` discharges live in `Proof/GameShape.lean`.
@@ -381,3 +486,21 @@ shows a logged run depends only on the view and the initial log) and `slotBit`/`
   116-digit integers. Use `rw [one_mul, ← pow_add]`.
 * After `fin_cases chunk` the goal keeps `128 * 0` and `FixedKeySlot.hash ⟨0, ⋯⟩`; `simp only`
   with the extraction lemmas does not fire. Plain `simp` with the same lemmas does.
+* **`rw` silently refuses to rewrite under a binder when the instantiation captures the bound
+  variable.** `rw [hybridData_bind]` on `(uniform key).bind fun key => hybridData.bind (body key)`
+  reports "did not find an occurrence of the pattern `hybridData.bind ?continuation`" while
+  printing a target that visibly contains it. Descend with
+  `refine congrArg (PMF.bind _) (funext fun key => ?_)` first.
+* A `bind`-splitting lemma such as `bind_pairLaw` / `bind_stageLaw` must be applied with its
+  continuation **given explicitly**: the pattern `?continuation ((key, datum), outcome)` is not a
+  Miller pattern, so `rw` cannot solve it, but supplying the lambda makes the match first-order.
+  `rw` does beta-reduce and project the supplied lambda against the explicit pair, so
+  `fun sample => f sample.1.2 sample.2.1.1` matches `f datum outcome.1.1` after instantiation.
+* Passing `_` for the two `State` arguments of `run_idealOracle_agree` makes its `agree`
+  hypothesis elaborate against `publicAnswer (State.view ?m) query = publicAnswer (State.view ?m)
+  query` and fail; give both states explicitly (and `show` the goal in `map loggedOutcome` form
+  first).
+* `ENNReal.toReal_ofNat` rewrites **all** occurrences of `(2 : ENNReal).toReal` at once, so a
+  second copy of it in the same `rw` list fails with "did not find an occurrence".
+* `simp only […, BitAdaptor.encode]` leaves `if True then … else …` behind when the bit has
+  already been rewritten to `true`; plain `simp` closes it.
