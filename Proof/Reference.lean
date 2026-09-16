@@ -23,6 +23,7 @@ below one unit of work per query over `2^100`.
 -/
 
 import Proof.Steering
+import Proof.Uniform
 
 namespace Kriterion.ArgoMAC.Security
 
@@ -329,5 +330,264 @@ def middleEquiv (input : AffineInput) : Coordinates ≃ Coordinates where
   invFun := decodeCoordinates input
   left_inv := decodeCoordinates_encodeCoordinates input
   right_inv := encodeCoordinates_decodeCoordinates input
+
+/-! ### The visible data of one input -/
+
+theorem secretOracle_decrypt_encrypt (hash : BaseField) (pad : BitAdaptor.Ciphertext)
+    (label : Block) (message : BaseField) :
+    (secretOracle hash pad).decrypt label (pad ^^^ BitAdaptor.fieldBytes message) = message :=
+  (secretOracle hash pad).decryptEncrypt label message
+
+/-- With secret oracles, every gate releases its selected output whatever label it reads. -/
+theorem evaluateDigit_secret (bridgeKey : BaseField) (key : InputMacKey) (raw : Coordinates)
+    (input : AffineInput) (adaptor : CurveAdaptor) (value : BaseField) (mac : CoordinateMac)
+    (bits : inputBits input adaptor = coordinateValues value) :
+    CurveMembership.evaluateDigit (secretWindows raw.hash raw.pad adaptor)
+        (tableRows (raw.table bridgeKey key) adaptor) value mac =
+      DigitAdaptor.fromBits ((encodeCoordinates input raw).hash adaptor) := by
+  unfold CurveMembership.evaluateDigit
+  refine congrArg DigitAdaptor.fromBits ?_
+  funext index
+  rw [DigitAdaptor.evaluate, Vector.get_ofFn, secretWindows_val, Coordinates.table_rows]
+  change (if coordinateValues value index then
+      (secretOracle (raw.hash adaptor index) (raw.pad adaptor index)).decrypt (mac.get index)
+        (raw.pad adaptor index ^^^ BitAdaptor.fieldBytes (raw.slope adaptor + raw.hash adaptor index))
+    else raw.hash adaptor index) =
+    if inputBits input adaptor index then raw.slope adaptor + raw.hash adaptor index
+    else raw.hash adaptor index
+  rw [secretOracle_decrypt_encrypt, bits]
+
+/-- The part of the released value that the visible middle coordinates determine. -/
+def offsetTerm (input : AffineInput) (middle : Coordinates) : BaseField :=
+  middle.r1 * input.x ^ 3 + middle.r2 * input.y ^ 2 +
+    DigitAdaptor.fromBits (middle.hash .x3) * input.x ^ 2 +
+    DigitAdaptor.fromBits (middle.hash .y4) * input.y +
+    DigitAdaptor.fromBits (middle.hash .x5) * input.x +
+    DigitAdaptor.fromBits (middle.hash .y6) + DigitAdaptor.fromBits (middle.hash .x7)
+
+/-- The curve discriminant of one input: zero exactly on the curve. -/
+def curveGap (input : AffineInput) : BaseField :=
+  input.x ^ 3 + 3 - input.y ^ 2
+
+theorem curveGap_eq_zero_iff (input : AffineInput) : curveGap input = 0 ↔ OnCurve input := by
+  unfold curveGap OnCurve
+  constructor
+  · intro zero
+    linear_combination -zero
+  · intro onCurve
+    linear_combination -onCurve
+
+/-- The released row is affine in the mask with the curve gap as coefficient. -/
+theorem Coordinates.table_c0_eq (bridgeKey : BaseField) (key : InputMacKey) (raw : Coordinates)
+    (input : AffineInput) :
+    (raw.table bridgeKey key).c0 =
+      bridgeKey + raw.mask * curveGap input - offsetTerm input (encodeCoordinates input raw) := by
+  have released := CurveMembership.evaluateEncoded bridgeKey raw.mask raw.r1 raw.r2
+    (secretOracles raw.hash raw.pad) key input
+  simp only [CurveMembership.evaluate, secretOracles] at released
+  change (raw.table bridgeKey key).c0 + (raw.table bridgeKey key).c1 * input.x ^ 3 +
+    (raw.table bridgeKey key).c2 * input.y ^ 2 +
+    CurveMembership.evaluateDigit (secretWindows raw.hash raw.pad .x3)
+      (tableRows (raw.table bridgeKey key) .x3) input.x _ * input.x ^ 2 +
+    CurveMembership.evaluateDigit (secretWindows raw.hash raw.pad .y4)
+      (tableRows (raw.table bridgeKey key) .y4) input.y _ * input.y +
+    CurveMembership.evaluateDigit (secretWindows raw.hash raw.pad .x5)
+      (tableRows (raw.table bridgeKey key) .x5) input.x _ * input.x +
+    CurveMembership.evaluateDigit (secretWindows raw.hash raw.pad .y6)
+      (tableRows (raw.table bridgeKey key) .y6) input.y _ +
+    CurveMembership.evaluateDigit (secretWindows raw.hash raw.pad .x7)
+      (tableRows (raw.table bridgeKey key) .x7) input.x _ = _ at released
+  rw [evaluateDigit_secret bridgeKey key raw input .x3 input.x _ rfl,
+    evaluateDigit_secret bridgeKey key raw input .y4 input.y _ rfl,
+    evaluateDigit_secret bridgeKey key raw input .x5 input.x _ rfl,
+    evaluateDigit_secret bridgeKey key raw input .y6 input.y _ rfl,
+    evaluateDigit_secret bridgeKey key raw input .x7 input.x _ rfl,
+    Coordinates.table_c1, Coordinates.table_c2] at released
+  have r1 : (encodeCoordinates input raw).r1 = raw.mask + raw.r1 := rfl
+  have r2 : (encodeCoordinates input raw).r2 = -raw.mask + raw.r2 := rfl
+  unfold offsetTerm curveGap
+  rw [r1, r2]
+  linear_combination released
+
+/-- The visible data of one input as coordinates: the released row `c0` in place of the
+mask, then `c1`, `c2`, the selected outputs, and the rows. -/
+def visibleCoordinates (bridgeKey : BaseField) (key : InputMacKey) (input : AffineInput)
+    (raw : Coordinates) : Coordinates :=
+  { encodeCoordinates input raw with mask := (raw.table bridgeKey key).c0 }
+
+/-- The release map on middle coordinates: the mask becomes the released row. -/
+def releaseMiddle (bridgeKey : BaseField) (input : AffineInput) (middle : Coordinates) :
+    Coordinates :=
+  { middle with mask := bridgeKey + middle.mask * curveGap input - offsetTerm input middle }
+
+theorem offsetTerm_mask (input : AffineInput) (middle : Coordinates) (mask : BaseField) :
+    offsetTerm input { middle with mask } = offsetTerm input middle := rfl
+
+theorem visibleCoordinates_eq (bridgeKey : BaseField) (key : InputMacKey) (input : AffineInput)
+    (raw : Coordinates) :
+    visibleCoordinates bridgeKey key input raw =
+      releaseMiddle bridgeKey input (encodeCoordinates input raw) := by
+  unfold visibleCoordinates releaseMiddle
+  rw [Coordinates.table_c0_eq bridgeKey key raw input]
+  rfl
+
+theorem offsetTerm_releaseMiddle (bridgeKey : BaseField) (input : AffineInput)
+    (middle : Coordinates) :
+    offsetTerm input (releaseMiddle bridgeKey input middle) = offsetTerm input middle := by
+  dsimp only [offsetTerm, releaseMiddle]
+
+/-- The inverse of the release map off the curve. -/
+def unreleaseMiddle [FieldCertificate] (bridgeKey : BaseField) (input : AffineInput)
+    (visible : Coordinates) : Coordinates :=
+  { visible with mask := (visible.mask - bridgeKey + offsetTerm input visible) / curveGap input }
+
+theorem offsetTerm_unreleaseMiddle [FieldCertificate] (bridgeKey : BaseField)
+    (input : AffineInput) (visible : Coordinates) :
+    offsetTerm input (unreleaseMiddle bridgeKey input visible) = offsetTerm input visible := by
+  dsimp only [offsetTerm, unreleaseMiddle]
+
+/-- Off the curve the release map is a bijection of the middle coordinates. -/
+def releaseEquiv [FieldCertificate] (bridgeKey : BaseField) (input : AffineInput)
+    (offCurve : curveGap input ≠ 0) : Coordinates ≃ Coordinates where
+  toFun := releaseMiddle bridgeKey input
+  invFun := unreleaseMiddle bridgeKey input
+  left_inv middle := by
+    refine Coordinates.ext ?_ ?_ ?_ ?_ ?_
+    case refine_2 => dsimp only [releaseMiddle, unreleaseMiddle]
+    case refine_3 => dsimp only [releaseMiddle, unreleaseMiddle]
+    case refine_4 => dsimp only [releaseMiddle, unreleaseMiddle]
+    case refine_5 => dsimp only [releaseMiddle, unreleaseMiddle]
+    change (bridgeKey + middle.mask * curveGap input - offsetTerm input middle -
+      bridgeKey + offsetTerm input (releaseMiddle bridgeKey input middle)) / curveGap input =
+      middle.mask
+    rw [offsetTerm_releaseMiddle, show bridgeKey + middle.mask * curveGap input -
+      offsetTerm input middle - bridgeKey + offsetTerm input middle =
+      middle.mask * curveGap input by ring, mul_div_cancel_right₀ _ offCurve]
+  right_inv visible := by
+    refine Coordinates.ext ?_ ?_ ?_ ?_ ?_
+    case refine_2 => dsimp only [releaseMiddle, unreleaseMiddle]
+    case refine_3 => dsimp only [releaseMiddle, unreleaseMiddle]
+    case refine_4 => dsimp only [releaseMiddle, unreleaseMiddle]
+    case refine_5 => dsimp only [releaseMiddle, unreleaseMiddle]
+    change bridgeKey + (visible.mask - bridgeKey + offsetTerm input visible) / curveGap input *
+      curveGap input - offsetTerm input (unreleaseMiddle bridgeKey input visible) = visible.mask
+    rw [offsetTerm_unreleaseMiddle, div_mul_cancel₀ _ offCurve]
+    ring
+
+/-! ### Finiteness -/
+
+set_option exponentiation.threshold 300 in
+instance : Fintype BitAdaptor.Ciphertext :=
+  Fintype.ofEquiv (Fin (2 ^ 256)) BitVec.equivFin.symm.toEquiv
+
+/-- The coordinate fields as one tuple. -/
+def Coordinates.data (raw : Coordinates) :
+    BaseField × BaseField × BaseField × GateValues BaseField × GateValues BitAdaptor.Ciphertext :=
+  (raw.mask, raw.r1, raw.r2, raw.hash, raw.pad)
+
+theorem Coordinates.data_injective : Function.Injective Coordinates.data := by
+  intro first second equal
+  cases first
+  cases second
+  cases equal
+  rfl
+
+noncomputable instance coordinatesFintype : Fintype Coordinates :=
+  Fintype.ofInjective Coordinates.data Coordinates.data_injective
+
+instance : Nonempty Coordinates := ⟨⟨0, 0, 0, fun _ _ => 0, fun _ _ => 0⟩⟩
+
+/-! ### The visible laws -/
+
+/-- Off the curve, the visible data of a uniform reference sample is uniform, whatever the
+bridge key. -/
+theorem visibleCoordinates_offCurve [FieldCertificate] (bridgeKey : BaseField)
+    (key : InputMacKey) (input : AffineInput) (offCurve : curveGap input ≠ 0) :
+    (PMF.uniformOfFintype Coordinates).map (visibleCoordinates bridgeKey key input) =
+      PMF.uniformOfFintype Coordinates := by
+  have composed : visibleCoordinates bridgeKey key input =
+      ⇑((middleEquiv input).trans (releaseEquiv bridgeKey input offCurve)) := by
+    funext raw
+    rw [visibleCoordinates_eq]
+    rfl
+  rw [composed, uniformOfFintype_map_equiv]
+
+/-- Shift the selected output of adaptor `x7` at position `0`. -/
+def shiftSteering (shift : BaseField) (output : GateValues BaseField) : GateValues BaseField :=
+  fun adaptor index =>
+    if adaptor = .x7 ∧ index = 0 then output adaptor index + shift else output adaptor index
+
+theorem shiftSteering_shiftSteering (first second : BaseField) (output : GateValues BaseField) :
+    shiftSteering first (shiftSteering second output) = shiftSteering (first + second) output := by
+  funext adaptor index
+  simp only [shiftSteering]
+  split <;> ring
+
+theorem shiftSteering_zero (output : GateValues BaseField) : shiftSteering 0 output = output := by
+  funext adaptor index
+  simp only [shiftSteering]
+  split <;> ring
+
+/-- Shift the selected output of the steering gate in the visible or middle coordinates. -/
+def shiftMiddle (shift : BaseField) (middle : Coordinates) : Coordinates :=
+  { middle with hash := shiftSteering shift middle.hash }
+
+/-- The steering shift is a bijection. -/
+def shiftMiddleEquiv (shift : BaseField) : Coordinates ≃ Coordinates where
+  toFun := shiftMiddle shift
+  invFun := shiftMiddle (-shift)
+  left_inv middle := by
+    simp only [shiftMiddle, shiftSteering_shiftSteering, neg_add_cancel, shiftSteering_zero]
+  right_inv middle := by
+    simp only [shiftMiddle, shiftSteering_shiftSteering, add_neg_cancel, shiftSteering_zero]
+
+theorem fromBits_shiftSteering (shift : BaseField) (output : GateValues BaseField) :
+    DigitAdaptor.fromBits (shiftSteering shift output .x7) =
+      DigitAdaptor.fromBits (output .x7) + shift := by
+  rw [fromBits_shift (output .x7) (shiftSteering shift output .x7)]
+  · simp [shiftSteering]
+  · intro index nonzero
+    simp [shiftSteering, nonzero]
+
+theorem offsetTerm_shiftMiddle (input : AffineInput) (shift : BaseField) (middle : Coordinates) :
+    offsetTerm input (shiftMiddle shift middle) = offsetTerm input middle + shift := by
+  unfold offsetTerm shiftMiddle
+  simp only
+  rw [fromBits_shiftSteering]
+  have other (adaptor : CurveAdaptor) (different : adaptor ≠ .x7) :
+      shiftSteering shift middle.hash adaptor = middle.hash adaptor := by
+    funext index
+    simp [shiftSteering, different]
+  rw [other .x3 (by decide), other .y4 (by decide), other .x5 (by decide), other .y6 (by decide)]
+  ring
+
+/-- On the curve the steering shift commutes with the release map and moves the bridge key. -/
+theorem shiftMiddle_releaseMiddle (bridgeKey shift : BaseField) (input : AffineInput)
+    (onCurve : curveGap input = 0) (middle : Coordinates) :
+    shiftMiddle shift (releaseMiddle bridgeKey input middle) =
+      releaseMiddle (bridgeKey + shift) input (shiftMiddle shift middle) := by
+  refine Coordinates.ext ?_ rfl rfl rfl rfl
+  change bridgeKey + middle.mask * curveGap input - offsetTerm input middle =
+    bridgeKey + shift + middle.mask * curveGap input - offsetTerm input (shiftMiddle shift middle)
+  rw [offsetTerm_shiftMiddle, onCurve]
+  ring
+
+/-- On the curve, shifting the steering output of the visible data by `shift` moves the
+visible law of `bridgeKey` to the visible law of `bridgeKey + shift`. -/
+theorem visibleCoordinates_onCurve (bridgeKey shift : BaseField) (key : InputMacKey)
+    (input : AffineInput) (onCurve : curveGap input = 0) :
+    ((PMF.uniformOfFintype Coordinates).map (visibleCoordinates bridgeKey key input)).map
+        (shiftMiddle shift) =
+      (PMF.uniformOfFintype Coordinates).map (visibleCoordinates (bridgeKey + shift) key input) := by
+  have composed : shiftMiddle shift ∘ visibleCoordinates bridgeKey key input =
+      visibleCoordinates (bridgeKey + shift) key input ∘
+        ⇑((middleEquiv input).trans ((shiftMiddleEquiv shift).trans (middleEquiv input).symm)) := by
+    funext raw
+    change shiftMiddle shift (visibleCoordinates bridgeKey key input raw) =
+      visibleCoordinates (bridgeKey + shift) key input
+        (decodeCoordinates input (shiftMiddle shift (encodeCoordinates input raw)))
+    rw [visibleCoordinates_eq, visibleCoordinates_eq, encodeCoordinates_decodeCoordinates,
+      shiftMiddle_releaseMiddle bridgeKey shift input onCurve]
+  rw [PMF.map_comp, composed, ← PMF.map_comp, uniformOfFintype_map_equiv]
 
 end Kriterion.ArgoMAC.Security

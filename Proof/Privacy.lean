@@ -13,6 +13,7 @@ the adversary hits a programmed or hidden label point.
 -/
 
 import Proof.Simulator
+import Proof.Uniform
 import Solution
 
 namespace Kriterion.ArgoMAC.Security
@@ -41,48 +42,6 @@ def hybridSimulator [FieldCertificate] [GroupCertificate] (scalar : NonZeroScala
 /-- The real tape law of the obligation. -/
 abbrev realTape (witness : Garbling.Randomness) : Nat → PMF Garbling.Randomness :=
   @uniformRandomTape Garbling.Randomness (@Fintype.ofFinite _ inferInstance) witness
-
-/-! ### Uniform sampling facts -/
-
-/-- Two finite-type instances give the same uniform law. -/
-theorem uniformOfFintype_congr {Value : Type} (first second : Fintype Value) [Nonempty Value] :
-    @PMF.uniformOfFintype Value first _ = @PMF.uniformOfFintype Value second _ := by
-  cases Subsingleton.elim first second
-  rfl
-
-/-- A uniform sample composed with a bijection is a uniform sample. -/
-theorem uniformOfFintype_bind_equiv {Value Result : Type} [Fintype Value] [Nonempty Value]
-    (bijection : Value ≃ Value) (continuation : Value → PMF Result) :
-    ((PMF.uniformOfFintype Value).bind fun value => continuation (bijection value)) =
-      (PMF.uniformOfFintype Value).bind continuation := by
-  ext result
-  simp only [PMF.bind_apply, PMF.uniformOfFintype_apply, tsum_fintype]
-  exact bijection.sum_comp fun value => (Fintype.card Value : ENNReal)⁻¹ * continuation value result
-
-/-- Two independent uniform samples are one uniform sample of the product. -/
-theorem uniformOfFintype_bind_prod {Left Right Result : Type} [Fintype Left] [Nonempty Left]
-    [Fintype Right] [Nonempty Right] (continuation : Left → Right → PMF Result) :
-    ((PMF.uniformOfFintype Left).bind fun left =>
-        (PMF.uniformOfFintype Right).bind fun right => continuation left right) =
-      (PMF.uniformOfFintype (Left × Right)).bind fun pair => continuation pair.1 pair.2 := by
-  ext result
-  simp only [PMF.bind_apply, PMF.uniformOfFintype_apply, tsum_fintype, Fintype.sum_prod_type,
-    Fintype.card_prod, Nat.cast_mul]
-  rw [ENNReal.mul_inv (Or.inl (Nat.cast_ne_zero.mpr Fintype.card_ne_zero))
-    (Or.inl (ENNReal.natCast_ne_top _))]
-  simp only [Finset.mul_sum, mul_assoc]
-
-/-- A bind may be rewritten on the support of the sampled law. -/
-theorem bind_congr_support {Value Result : Type} {law : PMF Value}
-    {first second : Value → PMF Result}
-    (agree : ∀ value ∈ law.support, first value = second value) :
-    law.bind first = law.bind second := by
-  ext result
-  simp only [PMF.bind_apply]
-  refine tsum_congr fun value => ?_
-  by_cases member : value ∈ law.support
-  · rw [agree value member]
-  · rw [(law.apply_eq_zero_iff value).mpr member, zero_mul, zero_mul]
 
 /-! ### The bridge-key bijection -/
 
