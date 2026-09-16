@@ -15,4 +15,5 @@ import Proof.Distance
 import Proof.Product
 import Proof.GateProduct
 import Proof.FreshBridge
+import Proof.SecondStage
 import Proof.DeferredSteering
