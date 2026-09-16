@@ -469,6 +469,112 @@ theorem selectedPrograms_congr (key : InputMacKey) (input : AffineInput)
   | hash chunk => rw [selectedPrograms_hash, selectedPrograms_hash, sameFiber]
   | pad chunk => rw [selectedPrograms_pad, selectedPrograms_pad, sameOutput]
 
+/-- The indices the steering does not touch carry the same request whether the reference
+programming reads the original outputs and fibers or the shifted ones. -/
+theorem steerPrograms_untouched (key : InputMacKey) (input : AffineInput)
+    (outputs shifted : GateValues BaseField) (rows : GateValues BitAdaptor.Ciphertext)
+    (fibers : GateValues (BitVec 384)) (wanted : BaseField) (hash : BitVec 384)
+    (other : ∀ adaptor position, ¬(adaptor = CurveAdaptor.x7 ∧ position = 0) →
+      shifted adaptor position = outputs adaptor position)
+    (index : FixedKeyIndex)
+    (steeredNone : steerPrograms key input wanted hash (rows .x7 0) index = none) :
+    selectedPrograms key input shifted rows (setSteering hash fibers) index =
+      selectedPrograms key input outputs rows fibers index := by
+  by_cases steering : index.adaptor = CurveAdaptor.x7 ∧ index.position = 0
+  · obtain ⟨adaptor, position, slot⟩ := index
+    obtain ⟨rfl, rfl⟩ := steering
+    cases bit : inputBits input .x7 0 with
+    | false =>
+      cases slot with
+      | hash chunk =>
+        rw [steerPrograms_hash, bit, if_neg Bool.false_ne_true] at steeredNone
+        exact absurd steeredNone (by simp)
+      | pad chunk =>
+        rw [selectedPrograms_pad, selectedPrograms_pad, bit, if_neg Bool.false_ne_true,
+          if_neg Bool.false_ne_true]
+    | true =>
+      cases slot with
+      | hash chunk =>
+        rw [selectedPrograms_hash, selectedPrograms_hash, bit, if_pos rfl, if_pos rfl]
+      | pad chunk =>
+        rw [steerPrograms_pad, bit, if_pos rfl] at steeredNone
+        exact absurd steeredNone (by simp)
+  · exact selectedPrograms_congr key input outputs shifted rows fibers
+      (setSteering hash fibers) index (other index.adaptor index.position steering)
+      (setSteering_other hash fibers _ _ steering)
+
+/-- Every index the steering programs is already programmed by the reference game, at the
+same selected label. -/
+theorem steerPrograms_covered (key : InputMacKey) (input : AffineInput)
+    (outputs : GateValues BaseField) (rows : GateValues BitAdaptor.Ciphertext)
+    (fibers : GateValues (BitVec 384)) (wanted : BaseField) (hash : BitVec 384)
+    (index : FixedKeyIndex) (label second : Block)
+    (steered : steerPrograms key input wanted hash (rows .x7 0) index = some (label, second)) :
+    ∃ first, selectedPrograms key input outputs rows fibers index = some (label, first) := by
+  by_cases steering : index.adaptor = CurveAdaptor.x7 ∧ index.position = 0
+  · obtain ⟨adaptor, position, slot⟩ := index
+    obtain ⟨rfl, rfl⟩ := steering
+    cases bit : inputBits input .x7 0 with
+    | false =>
+      cases slot with
+      | hash chunk =>
+        rw [steerPrograms_hash, bit, if_neg Bool.false_ne_true] at steered
+        have labelEq : selectedLabel key input .x7 0 = label :=
+          congrArg Prod.fst (Option.some_inj.mp steered)
+        refine ⟨slotRange (.hash chunk) (fibers .x7 0) 0 label, ?_⟩
+        rw [selectedPrograms_hash, bit, if_neg Bool.false_ne_true, labelEq]
+      | pad chunk =>
+        rw [steerPrograms_pad, bit, if_neg Bool.false_ne_true] at steered
+        exact absurd steered (by simp)
+    | true =>
+      cases slot with
+      | hash chunk =>
+        rw [steerPrograms_hash, bit, if_pos rfl] at steered
+        exact absurd steered (by simp)
+      | pad chunk =>
+        rw [steerPrograms_pad, bit, if_pos rfl] at steered
+        have labelEq : selectedLabel key input .x7 0 = label :=
+          congrArg Prod.fst (Option.some_inj.mp steered)
+        refine ⟨slotRange (.pad chunk) 0
+          (rows .x7 0 ^^^ BitAdaptor.fieldBytes (outputs .x7 0)) label, ?_⟩
+        rw [selectedPrograms_pad, bit, if_pos rfl, labelEq]
+  · rw [steerPrograms_other _ _ _ _ _ _ steering] at steered
+    exact absurd steered (by simp)
+
+/-- At every index the steering programs, the reference programming of the shifted outputs
+issues exactly the steering's own request. -/
+theorem steerPrograms_retargeted (key : InputMacKey) (input : AffineInput)
+    (shifted : GateValues BaseField) (rows : GateValues BitAdaptor.Ciphertext)
+    (fibers : GateValues (BitVec 384)) (wanted : BaseField) (hash : BitVec 384)
+    (steering : shifted .x7 0 = wanted) (index : FixedKeyIndex) (label second : Block)
+    (steered : steerPrograms key input wanted hash (rows .x7 0) index = some (label, second)) :
+    selectedPrograms key input shifted rows (setSteering hash fibers) index =
+      some (label, second) := by
+  by_cases atGate : index.adaptor = CurveAdaptor.x7 ∧ index.position = 0
+  · obtain ⟨adaptor, position, slot⟩ := index
+    obtain ⟨rfl, rfl⟩ := atGate
+    cases bit : inputBits input .x7 0 with
+    | false =>
+      cases slot with
+      | hash chunk =>
+        rw [steerPrograms_hash, bit, if_neg Bool.false_ne_true] at steered
+        rw [selectedPrograms_hash, bit, if_neg Bool.false_ne_true, setSteering_steeringGate,
+          ← steered]
+      | pad chunk =>
+        rw [steerPrograms_pad, bit, if_neg Bool.false_ne_true] at steered
+        exact absurd steered (by simp)
+    | true =>
+      cases slot with
+      | hash chunk =>
+        rw [steerPrograms_hash, bit, if_pos rfl] at steered
+        exact absurd steered (by simp)
+      | pad chunk =>
+        rw [steerPrograms_pad, bit, if_pos rfl] at steered
+        rw [selectedPrograms_pad, bit, if_pos rfl, steering, ← steered,
+          BitVec.xor_comm (rows .x7 0)]
+  · rw [steerPrograms_other _ _ _ _ _ _ atGate] at steered
+    exact absurd steered (by simp)
+
 /-- The steered programming of the reference view is the reference programming of the
 shifted outputs, read on the reparametrised unprogrammed permutation. The freshness
 hypothesis is the bad event of the corresponding hop: the unprogrammed permutation must not
@@ -488,84 +594,13 @@ theorem programIndices_steerPrograms (oracle : PermutationOracle FixedKeyIndex B
           (setSteering hash fibers))
         (swapRanges (swapsOf (selectedPrograms key input outputs rows fibers)
           (steerPrograms key input (shiftSteering shift outputs .x7 0) hash (rows .x7 0)))
-          oracle) := by
-  refine programIndices_programIndices _ _ _ oracle ?_ ?_ ?_ fresh
-  · intro index steeredNone
-    by_cases steering : index.adaptor = CurveAdaptor.x7 ∧ index.position = 0
-    · obtain ⟨adaptor, position, slot⟩ := index
-      obtain ⟨rfl, rfl⟩ := steering
-      cases bit : inputBits input .x7 0 with
-      | false =>
-        cases slot with
-        | hash chunk =>
-          rw [steerPrograms_hash, bit, if_neg Bool.false_ne_true] at steeredNone
-          exact absurd steeredNone (by simp)
-        | pad chunk =>
-          rw [selectedPrograms_pad, selectedPrograms_pad, bit, if_neg Bool.false_ne_true,
-            if_neg Bool.false_ne_true]
-      | true =>
-        cases slot with
-        | hash chunk =>
-          rw [selectedPrograms_hash, selectedPrograms_hash, bit, if_pos rfl, if_pos rfl]
-        | pad chunk =>
-          rw [steerPrograms_pad, bit, if_pos rfl] at steeredNone
-          exact absurd steeredNone (by simp)
-    · exact selectedPrograms_congr key input outputs (shiftSteering shift outputs) rows fibers
-        (setSteering hash fibers) index (shiftSteering_other shift outputs _ _ steering)
-        (setSteering_other hash fibers _ _ steering)
-  · intro index label second steered
-    by_cases steering : index.adaptor = CurveAdaptor.x7 ∧ index.position = 0
-    · obtain ⟨adaptor, position, slot⟩ := index
-      obtain ⟨rfl, rfl⟩ := steering
-      cases bit : inputBits input .x7 0 with
-      | false =>
-        cases slot with
-        | hash chunk =>
-          rw [steerPrograms_hash, bit, if_neg Bool.false_ne_true] at steered
-          have labelEq : selectedLabel key input .x7 0 = label :=
-            congrArg Prod.fst (Option.some_inj.mp steered)
-          refine ⟨slotRange (.hash chunk) (fibers .x7 0) 0 label, ?_⟩
-          rw [selectedPrograms_hash, bit, if_neg Bool.false_ne_true, labelEq]
-        | pad chunk =>
-          rw [steerPrograms_pad, bit, if_neg Bool.false_ne_true] at steered
-          exact absurd steered (by simp)
-      | true =>
-        cases slot with
-        | hash chunk =>
-          rw [steerPrograms_hash, bit, if_pos rfl] at steered
-          exact absurd steered (by simp)
-        | pad chunk =>
-          rw [steerPrograms_pad, bit, if_pos rfl] at steered
-          have labelEq : selectedLabel key input .x7 0 = label :=
-            congrArg Prod.fst (Option.some_inj.mp steered)
-          refine ⟨slotRange (.pad chunk) 0
-            (rows .x7 0 ^^^ BitAdaptor.fieldBytes (outputs .x7 0)) label, ?_⟩
-          rw [selectedPrograms_pad, bit, if_pos rfl, labelEq]
-    · rw [steerPrograms_other _ _ _ _ _ _ steering] at steered
-      exact absurd steered (by simp)
-  · intro index label second steered
-    by_cases steering : index.adaptor = CurveAdaptor.x7 ∧ index.position = 0
-    · obtain ⟨adaptor, position, slot⟩ := index
-      obtain ⟨rfl, rfl⟩ := steering
-      cases bit : inputBits input .x7 0 with
-      | false =>
-        cases slot with
-        | hash chunk =>
-          rw [steerPrograms_hash, bit, if_neg Bool.false_ne_true] at steered
-          rw [selectedPrograms_hash, bit, if_neg Bool.false_ne_true, setSteering_steeringGate,
-            ← steered]
-        | pad chunk =>
-          rw [steerPrograms_pad, bit, if_neg Bool.false_ne_true] at steered
-          exact absurd steered (by simp)
-      | true =>
-        cases slot with
-        | hash chunk =>
-          rw [steerPrograms_hash, bit, if_pos rfl] at steered
-          exact absurd steered (by simp)
-        | pad chunk =>
-          rw [steerPrograms_pad, bit, if_pos rfl] at steered
-          rw [selectedPrograms_pad, bit, if_pos rfl, ← steered, BitVec.xor_comm (rows .x7 0)]
-    · rw [steerPrograms_other _ _ _ _ _ _ steering] at steered
-      exact absurd steered (by simp)
+          oracle) :=
+  programIndices_programIndices _ _ _ oracle
+    (steerPrograms_untouched key input outputs (shiftSteering shift outputs) rows fibers _ hash
+      (fun adaptor position atGate => shiftSteering_other shift outputs adaptor position atGate))
+    (steerPrograms_covered key input outputs rows fibers _ hash)
+    (steerPrograms_retargeted key input (shiftSteering shift outputs) rows fibers _ hash
+      (shiftSteering_steeringGate shift outputs ▸ rfl))
+    fresh
 
 end Kriterion.ArgoMAC.Security
