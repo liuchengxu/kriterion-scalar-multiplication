@@ -658,6 +658,310 @@ theorem publicAnswer_selectedPrograms (oracle : PermutationOracle FixedKeyIndex 
     · rw [first, second]
       exact programmed_symm_apply_of_not_mem _ _ _ _ missing
 
+/-! ### The second stage on the selected programming -/
+
+theorem programSelected_inputMacKey (state : State) (input : AffineInput)
+    (outputs : GateValues BaseField) (fibers : GateValues (BitVec 384)) :
+    (programSelected state input outputs fibers).inputMacKey = state.inputMacKey := rfl
+
+theorem programSelected_view (state : State) (input : AffineInput)
+    (outputs : GateValues BaseField) (fibers : GateValues (BitVec 384)) :
+    (programSelected state input outputs fibers).view =
+      (programIndices (selectedPrograms state.inputMacKey input outputs (tableRow state.table)
+        fibers) state.view.1, state.view.2) := rfl
+
+/-- The reference-shaped second stage: the honest labels on the view programmed at the
+selected labels only, for one fixed fiber family. -/
+def selectedStageTwo (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (circuit : Garbling.Public) (input : AffineInput) (advState : adversary.State)
+    (outputs : GateValues BaseField) (fibers : GateValues (BitVec 384)) (state : State) :
+    PMF (Bool × List Query) :=
+  hybridStageTwo adversary parameter auxiliary circuit input advState
+    (programSelected state input outputs fibers)
+
+/-- The reference-shaped second stage never reads the labels the input leaves
+unselected. -/
+theorem selectedStageTwo_unread (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (circuit : Garbling.Public) (input : AffineInput) (advState : adversary.State)
+    (outputs : GateValues BaseField) (fibers : GateValues (BitVec 384)) (view : View)
+    (priorLog : List Query) (table : CurveMembership.Table) (carrier : NonZeroBase)
+    (key : InputMacKey) (blocks : LabelIndex → Block) :
+    selectedStageTwo adversary parameter auxiliary circuit input advState outputs fibers
+        (stageTwoState view priorLog table carrier
+          (setKeyLabels key (unreadLabelBits input) blocks)) =
+      selectedStageTwo adversary parameter auxiliary circuit input advState outputs fibers
+        (stageTwoState view priorLog table carrier key) := by
+  unfold selectedStageTwo hybridStageTwo
+  simp only [programSelected_inputMacKey, stageTwoState_inputMacKey, encodeAffine_setKeyLabels]
+  refine map_loggedOutcome_congr _ _ _ ?_
+    (by rw [programSelected_log, programSelected_log, stageTwoState_log, stageTwoState_log])
+  simp only [programSelected_view, stageTwoState_view, stageTwoState_table,
+    stageTwoState_inputMacKey, selectedPrograms_setKeyLabels]
+
+/-- The log of the second stage is the first stage's log plus the second budget. -/
+theorem selectedStageTwo_length (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (circuit : Garbling.Public) (input : AffineInput) (advState : adversary.State)
+    (outputs : GateValues BaseField) (fibers : GateValues (BitVec 384)) (state : State)
+    (outcome : Bool × List Query)
+    (member : outcome ∈ (selectedStageTwo adversary parameter auxiliary circuit input advState
+      outputs fibers state).support) :
+    outcome.2.length ≤ state.log.length + adversary.secondQueryBudget parameter := by
+  unfold selectedStageTwo hybridStageTwo at member
+  rw [PMF.support_map] at member
+  obtain ⟨output, outputMember, rfl⟩ := member
+  have bound := run_idealOracle_log_length _ _ output outputMember
+  rw [programSelected_log] at bound
+  exact bound
+
+/-! ### The second oracle hop -/
+
+/-- The second stage of the H side after the first hop: the honest labels on the view
+programmed at every used label. -/
+def usedStageTwo (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (circuit : Garbling.Public) (input : AffineInput) (advState : adversary.State)
+    (key : InputMacKey) (values : FixedKeyIndex → Block) (view : View) (priorLog : List Query)
+    (carrier : NonZeroBase) : PMF (Bool × List Query) :=
+  hybridStageTwo adversary parameter auxiliary circuit input advState
+    (stageTwoState (programIndices (usedPrograms key values) view.1, view.2) priorLog circuit.1
+      carrier key)
+
+/-- Off the bad label values of the whole log, the second stage cannot tell the first hop's
+programming at every used label from the reference game's programming at the selected
+labels only. -/
+theorem usedStageTwo_agree (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (circuit : Garbling.Public) (input : AffineInput) (advState : adversary.State)
+    (oracle : PermutationOracle FixedKeyIndex Block)
+    (rest : PermutationOracle Garbling.EncIndex Block × (BaseField → Block × Block))
+    (priorLog : List Query) (carrier : NonZeroBase) (key : InputMacKey)
+    (bridgeKey mask r1 r2 : BaseField) (digests : GateValues (BitVec 384))
+    (pads : GateValues BitAdaptor.Ciphertext)
+    (tableSame : circuit.1 =
+      Coordinates.table bridgeKey key (digestedRaw mask r1 r2 digests pads))
+    (result : Bool) (log : List Query)
+    (good : ∀ query ∈ log,
+      ¬ SelectedBad oracle (freshValue digests pads) key input query) :
+    usedStageTwo adversary parameter auxiliary circuit input advState key
+        (freshValue digests pads) (oracle, rest) priorLog carrier (result, log) =
+      selectedStageTwo adversary parameter auxiliary circuit input advState
+        (encodeCoordinates input (digestedRaw mask r1 r2 digests pads)).hash digests
+        (stageTwoState (oracle, rest) priorLog circuit.1 carrier key) (result, log) := by
+  unfold usedStageTwo selectedStageTwo hybridStageTwo
+  simp only [programSelected_inputMacKey, stageTwoState_inputMacKey]
+  refine run_idealOracle_agree (adversary.decide parameter circuit
+      (Lamport.selectedLabels (key.encodeAffine input)) auxiliary advState)
+    (SelectedBad oracle (freshValue digests pads) key input)
+    (stageTwoState (programIndices (usedPrograms key (freshValue digests pads)) oracle, rest)
+      priorLog circuit.1 carrier key)
+    (programSelected (stageTwoState (oracle, rest) priorLog circuit.1 carrier key) input
+      (encodeCoordinates input (digestedRaw mask r1 r2 digests pads)).hash digests) ?_ ?_
+    result log good
+  · rw [stageTwoState_log, programSelected_log, stageTwoState_log]
+  · intro query notBad
+    rw [stageTwoState_view, programSelected_view, stageTwoState_view, stageTwoState_table,
+      stageTwoState_inputMacKey, tableSame]
+    exact publicAnswer_selectedPrograms oracle rest key input bridgeKey mask r1 r2 digests pads
+      query notBad
+
+/-- A sample built from the key, the key-free data and the first stage's outcome splits
+back into its three binds. -/
+theorem bind_stageLaw {Data Outcome : Type} (adversary : Adversary) (data : PMF Data)
+    (firstLaw : Data → PMF ((AffineInput × adversary.State) × List Query))
+    (continuation : (InputMacKey × Data) × ((AffineInput × adversary.State) × List Query) →
+      PMF Outcome) :
+    (((PMF.uniformOfFintype InputMacKey).bind fun key => data.bind fun datum =>
+        (firstLaw datum).map fun outcome => ((key, datum), outcome)).bind continuation) =
+      (PMF.uniformOfFintype InputMacKey).bind fun key => data.bind fun datum =>
+        (firstLaw datum).bind fun outcome => continuation ((key, datum), outcome) := by
+  rw [PMF.bind_bind]
+  refine congrArg (PMF.bind _) (funext fun key => ?_)
+  rw [PMF.bind_bind]
+  refine congrArg (PMF.bind data) (funext fun datum => ?_)
+  rw [PMF.bind_map]
+  rfl
+
+/-- The bad event of the second oracle hop: some entry of the whole log hits a hidden label
+value of its own gate's unselected label. -/
+def secondBad {Data : Type} (adversary : Adversary) (view : Data → View)
+    (values : Data → FixedKeyIndex → Block) :
+    Set (((InputMacKey × Data) × ((AffineInput × adversary.State) × List Query)) ×
+      (Bool × List Query)) :=
+  {pair | ∃ query ∈ pair.2.2, SelectedBad (view pair.1.1.2).1 (values pair.1.1.2) pair.1.1.1
+    pair.1.2.1.1 query}
+
+/-- The bad mass of the second oracle hop, one first-stage outcome at a time. -/
+theorem secondBad_mass_le {Data : Type} (adversary : Adversary) (parameter : Nat)
+    (auxiliary : Unit) (view : Data → View) (circuit : Data → Garbling.Public)
+    (carrier : Data → NonZeroBase) (mask r1 r2 : Data → BaseField)
+    (digests : Data → GateValues (BitVec 384))
+    (pads : Data → GateValues BitAdaptor.Ciphertext) (datum : Data)
+    (outcome : (AffineInput × adversary.State) × List Query)
+    (shortLog : outcome.2.length ≤ adversary.firstQueryBudget parameter) :
+    ((PMF.uniformOfFintype InputMacKey).bind fun key =>
+        (selectedStageTwo adversary parameter auxiliary (circuit datum) outcome.1.1 outcome.1.2
+          (encodeCoordinates outcome.1.1 (digestedRaw (mask datum) (r1 datum) (r2 datum)
+            (digests datum) (pads datum))).hash (digests datum)
+          (stageTwoState (view datum) outcome.2 (circuit datum).1 (carrier datum) key)).map
+            fun result => (((key, datum), outcome), result)).toOuterMeasure
+        (secondBad adversary view fun other => freshValue (digests other) (pads other)) ≤
+      2 * ((adversary.firstQueryBudget parameter +
+        adversary.secondQueryBudget parameter : Nat) : ENNReal) / 2 ^ 128 := by
+  have base := secondStage_hidden_le
+    (fun key => selectedStageTwo adversary parameter auxiliary (circuit datum) outcome.1.1
+      outcome.1.2 (encodeCoordinates outcome.1.1 (digestedRaw (mask datum) (r1 datum) (r2 datum)
+        (digests datum) (pads datum))).hash (digests datum)
+      (stageTwoState (view datum) outcome.2 (circuit datum).1 (carrier datum) key))
+    (unreadLabelBits outcome.1.1)
+    (fun key blocks => selectedStageTwo_unread adversary parameter auxiliary (circuit datum)
+      outcome.1.1 outcome.1.2 _ (digests datum) (view datum) outcome.2 (circuit datum).1
+      (carrier datum) key blocks)
+    Prod.snd (adversary.firstQueryBudget parameter + adversary.secondQueryBudget parameter)
+    (fun key result member => by
+      have bound := selectedStageTwo_length adversary parameter auxiliary (circuit datum)
+        outcome.1.1 outcome.1.2 _ (digests datum)
+        (stageTwoState (view datum) outcome.2 (circuit datum).1 (carrier datum) key) result member
+      rw [stageTwoState_log] at bound
+      omega)
+    (unreadQueryIndex outcome.1.1)
+    (fun _ query => usedHidden (view datum).1 (freshValue (digests datum) (pads datum)) query) 2
+    (fun _ query => usedHidden_card _ _ query)
+  have transport : ((PMF.uniformOfFintype InputMacKey).bind fun key =>
+        (selectedStageTwo adversary parameter auxiliary (circuit datum) outcome.1.1 outcome.1.2
+          (encodeCoordinates outcome.1.1 (digestedRaw (mask datum) (r1 datum) (r2 datum)
+            (digests datum) (pads datum))).hash (digests datum)
+          (stageTwoState (view datum) outcome.2 (circuit datum).1 (carrier datum) key)).map
+            fun result => (((key, datum), outcome), result)) =
+      ((PMF.uniformOfFintype InputMacKey).bind fun key =>
+        (selectedStageTwo adversary parameter auxiliary (circuit datum) outcome.1.1 outcome.1.2
+          (encodeCoordinates outcome.1.1 (digestedRaw (mask datum) (r1 datum) (r2 datum)
+            (digests datum) (pads datum))).hash (digests datum)
+          (stageTwoState (view datum) outcome.2 (circuit datum).1 (carrier datum) key)).map
+            fun result => (key, result)).map
+        fun pair => (((pair.1, datum), outcome), pair.2) := by
+    rw [PMF.map_bind]
+    refine congrArg (PMF.bind _) (funext fun key => ?_)
+    rw [PMF.map_comp]
+    rfl
+  rw [transport, PMF.toOuterMeasure_map_apply]
+  exact le_trans (le_of_eq rfl) base
+
+/-- Hop B. Replacing the programming at every used label by the reference game's
+programming at the selected labels only is invisible until a logged query hits one of the
+two hidden label values of its own gate's unselected label. No part of the reference-shaped
+game reads those labels, so the union bound runs over the whole log and the hop costs
+`2 (q₁ + q₂) / 2 ^ 128`. -/
+theorem advantage_secondView_le {Data : Type} (adversary : Adversary) (parameter : Nat)
+    (auxiliary : Unit) (data : PMF Data) (view : Data → View)
+    (circuit : Data → Garbling.Public) (carrier : Data → NonZeroBase)
+    (bridgeKey mask r1 r2 : Data → BaseField) (digests : Data → GateValues (BitVec 384))
+    (pads : Data → GateValues BitAdaptor.Ciphertext)
+    (tableEq : ∀ (key : InputMacKey) (datum : Data), (circuit datum).1 =
+      Coordinates.table (bridgeKey datum) key
+        (digestedRaw (mask datum) (r1 datum) (r2 datum) (digests datum) (pads datum))) :
+    advantage
+        ((PMF.uniformOfFintype InputMacKey).bind fun key => data.bind fun datum =>
+          (loggedFirstStage adversary parameter auxiliary (circuit datum)
+              (view datum)).bind fun outcome =>
+            (usedStageTwo adversary parameter auxiliary (circuit datum) outcome.1.1 outcome.1.2
+              key (freshValue (digests datum) (pads datum)) (view datum) outcome.2
+              (carrier datum)).map Prod.fst)
+        ((PMF.uniformOfFintype InputMacKey).bind fun key => data.bind fun datum =>
+          (loggedFirstStage adversary parameter auxiliary (circuit datum)
+              (view datum)).bind fun outcome =>
+            (selectedStageTwo adversary parameter auxiliary (circuit datum) outcome.1.1
+              outcome.1.2 (encodeCoordinates outcome.1.1 (digestedRaw (mask datum) (r1 datum)
+                (r2 datum) (digests datum) (pads datum))).hash (digests datum)
+              (stageTwoState (view datum) outcome.2 (circuit datum).1 (carrier datum) key)).map
+                Prod.fst) ≤
+      2 * ((adversary.firstQueryBudget parameter +
+        adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 := by
+  rw [← bind_stageLaw adversary data
+      (fun datum => loggedFirstStage adversary parameter auxiliary (circuit datum) (view datum))
+      (fun sample => (usedStageTwo adversary parameter auxiliary (circuit sample.1.2)
+        sample.2.1.1 sample.2.1.2 sample.1.1
+        (freshValue (digests sample.1.2) (pads sample.1.2)) (view sample.1.2) sample.2.2
+        (carrier sample.1.2)).map Prod.fst),
+    ← bind_stageLaw adversary data
+      (fun datum => loggedFirstStage adversary parameter auxiliary (circuit datum) (view datum))
+      (fun sample => (selectedStageTwo adversary parameter auxiliary (circuit sample.1.2)
+        sample.2.1.1 sample.2.1.2 (encodeCoordinates sample.2.1.1
+          (digestedRaw (mask sample.1.2) (r1 sample.1.2) (r2 sample.1.2) (digests sample.1.2)
+            (pads sample.1.2))).hash (digests sample.1.2)
+        (stageTwoState (view sample.1.2) sample.2.2 (circuit sample.1.2).1 (carrier sample.1.2)
+          sample.1.1)).map Prod.fst)]
+  refine le_trans (advantage_bind_le_jointBad
+    ((PMF.uniformOfFintype InputMacKey).bind fun key => data.bind fun datum =>
+      (loggedFirstStage adversary parameter auxiliary (circuit datum) (view datum)).map
+        fun outcome => ((key, datum), outcome))
+    (fun sample => usedStageTwo adversary parameter auxiliary (circuit sample.1.2)
+      sample.2.1.1 sample.2.1.2 sample.1.1 (freshValue (digests sample.1.2) (pads sample.1.2))
+      (view sample.1.2) sample.2.2 (carrier sample.1.2))
+    (fun sample => selectedStageTwo adversary parameter auxiliary (circuit sample.1.2)
+      sample.2.1.1 sample.2.1.2 (encodeCoordinates sample.2.1.1
+        (digestedRaw (mask sample.1.2) (r1 sample.1.2) (r2 sample.1.2) (digests sample.1.2)
+          (pads sample.1.2))).hash (digests sample.1.2)
+      (stageTwoState (view sample.1.2) sample.2.2 (circuit sample.1.2).1 (carrier sample.1.2)
+        sample.1.1))
+    (fun _ result => PMF.pure result.1)
+    (secondBad adversary view fun datum => freshValue (digests datum) (pads datum)) ?_) ?_
+  · rintro ⟨⟨⟨key, datum⟩, outcome⟩, result, log⟩ good
+    exact usedStageTwo_agree adversary parameter auxiliary (circuit datum) outcome.1.1
+      outcome.1.2 (view datum).1 (view datum).2 outcome.2 (carrier datum) key (bridgeKey datum)
+      (mask datum) (r1 datum) (r2 datum) (digests datum) (pads datum) (tableEq key datum)
+      result log fun query member bad => good ⟨query, member, bad⟩
+  · have expand : jointLaw
+        ((PMF.uniformOfFintype InputMacKey).bind fun key => data.bind fun datum =>
+          (loggedFirstStage adversary parameter auxiliary (circuit datum) (view datum)).map
+            fun outcome => ((key, datum), outcome))
+        (fun sample => selectedStageTwo adversary parameter auxiliary (circuit sample.1.2)
+          sample.2.1.1 sample.2.1.2 (encodeCoordinates sample.2.1.1
+            (digestedRaw (mask sample.1.2) (r1 sample.1.2) (r2 sample.1.2) (digests sample.1.2)
+              (pads sample.1.2))).hash (digests sample.1.2)
+          (stageTwoState (view sample.1.2) sample.2.2 (circuit sample.1.2).1 (carrier sample.1.2)
+            sample.1.1)) =
+        data.bind fun datum =>
+          (loggedFirstStage adversary parameter auxiliary (circuit datum)
+              (view datum)).bind fun outcome =>
+            (PMF.uniformOfFintype InputMacKey).bind fun key =>
+              (selectedStageTwo adversary parameter auxiliary (circuit datum) outcome.1.1
+                outcome.1.2 (encodeCoordinates outcome.1.1 (digestedRaw (mask datum) (r1 datum)
+                  (r2 datum) (digests datum) (pads datum))).hash (digests datum)
+                (stageTwoState (view datum) outcome.2 (circuit datum).1 (carrier datum) key)).map
+                  fun result => (((key, datum), outcome), result) := by
+      unfold jointLaw
+      rw [bind_stageLaw adversary data
+        (fun datum => loggedFirstStage adversary parameter auxiliary (circuit datum) (view datum))
+        (fun sample => (selectedStageTwo adversary parameter auxiliary (circuit sample.1.2)
+          sample.2.1.1 sample.2.1.2 (encodeCoordinates sample.2.1.1
+            (digestedRaw (mask sample.1.2) (r1 sample.1.2) (r2 sample.1.2) (digests sample.1.2)
+              (pads sample.1.2))).hash (digests sample.1.2)
+          (stageTwoState (view sample.1.2) sample.2.2 (circuit sample.1.2).1 (carrier sample.1.2)
+            sample.1.1)).map (Prod.mk sample))]
+      rw [PMF.bind_comm (PMF.uniformOfFintype InputMacKey) data]
+      refine congrArg (PMF.bind data) (funext fun datum => ?_)
+      exact PMF.bind_comm (PMF.uniformOfFintype InputMacKey)
+        (loggedFirstStage adversary parameter auxiliary (circuit datum) (view datum)) _
+    rw [expand]
+    have massLe : (data.bind fun datum =>
+          (loggedFirstStage adversary parameter auxiliary (circuit datum)
+              (view datum)).bind fun outcome =>
+            (PMF.uniformOfFintype InputMacKey).bind fun key =>
+              (selectedStageTwo adversary parameter auxiliary (circuit datum) outcome.1.1
+                outcome.1.2 (encodeCoordinates outcome.1.1 (digestedRaw (mask datum) (r1 datum)
+                  (r2 datum) (digests datum) (pads datum))).hash (digests datum)
+                (stageTwoState (view datum) outcome.2 (circuit datum).1 (carrier datum) key)).map
+                  fun result => (((key, datum), outcome), result)).toOuterMeasure
+        (secondBad adversary view fun datum => freshValue (digests datum) (pads datum)) ≤
+        2 * ((adversary.firstQueryBudget parameter +
+          adversary.secondQueryBudget parameter : Nat) : ENNReal) / 2 ^ 128 := by
+      refine Probability.bind_event_le _ _ _ _ fun datum _ => ?_
+      refine Probability.bind_event_le _ _ _ _ fun outcome member => ?_
+      exact secondBad_mass_le adversary parameter auxiliary view circuit carrier mask r1 r2
+        digests pads datum outcome
+        (loggedFirstStage_length adversary parameter auxiliary (circuit datum) (view datum)
+          outcome member)
+    refine le_trans (ENNReal.toReal_mono (by finiteness) massLe) ?_
+    exact le_of_eq (toReal_two_budget _)
+
 end
 
 end Kriterion.ArgoMAC.Security
