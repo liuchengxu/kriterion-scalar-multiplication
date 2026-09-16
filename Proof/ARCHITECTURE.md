@@ -1,6 +1,6 @@
 # Proof architecture for `hybridGame_close_to_idealGame`
 
-Status of the tree (after slice 3o): every obligation is proved except the single `sorry` at
+Status of the tree (after slice 3p): every obligation is proved except the single `sorry` at
 `Proof/Privacy.lean`, theorem `hybridGame_close_to_idealGame` (statement must stay
 byte-identical). Both sides of the chain reach a reference game, **the final assembly is
 machine-checked** (`workPerAdvantage_of_steering`, `Proof/Assembly.lean`), and the only
@@ -9,11 +9,18 @@ explicit games. This document is the plan for closing it, the pieces that are al
 machine-checked, and the constant it produces. The next slice must inherit it rather than
 re-derive it.
 
+Slice 3p **replaced the route of the charge half** and built its mathematical core. The
+census route of slices 3n/3o -- charge four bad points per entry of the *final* log -- is
+**unsound inside the budget** when the steering bit is `true`; the replacement charges
+nothing on the second stage at all, because the two views have the *same* conditional law
+given the first stage's transcript (`compatibleLaw_double`). Read "Corrections from slice
+3p" before touching `Proof/Charge.lean`. `hybridGame_close_to_idealGame` still carries the
+single `sorry` and no constant moved.
+
 Slice 3o landed the **transfer half of step 7 in full** (`Proof/Shifted.lean`) and the
 **whole deterministic skeleton of the charge half** (`Proof/Charge.lean`). What is left of
 the obligation is one probabilistic statement: the mass of the steering hop's bad event.
-See "Corrections from slice 3o". `hybridGame_close_to_idealGame` still carries the single
-`sorry` and no constant moved.
+See "Corrections from slice 3o".
 
 Slice 3n built the **glue that makes the lazy-sampling theorem usable on the hop's two
 games** (`Proof/Erased.lean`) and answered the shape question slice 3m flagged. See
@@ -1027,12 +1034,144 @@ instead of the whole key; `uniform_bind_setKeyLabel` / `uniform_keyLabel_mem` ar
     syntactically `law.map (releasedPair ...)`. Supply the bridging `rfl` as a named
     `have` and `rw` it.
 
-**What P10 still has to do (as of slice 3o).** Exactly one thing: the hypothesis of
+**Corrections from slice 3p -- THE CENSUS ROUTE IS WRONG; THE CHARGE IS A FIRST-STAGE
+EVENT ONLY. READ THIS BEFORE THE SLICE-3N AND SLICE-3O BLOCKS.**
+
+* **The four-point census cannot be paid on a second-stage entry when the steering bit is
+  `true`, and the `4 q / 2 ^ 128` figure of slices 3n/3o is therefore not achievable as
+  described.** The census prices the honest range `f` of the steering gate as "one point in
+  the honest hash-fiber chunk `c_f`, which the shifted game never reads, hence deferrable"
+  (`fiberChunk_mass_le`). That is true only in the `false` branch. At
+  `inputBits input .x7 0 = true` the reference game programs the **pad** slots, and
+  `selectedPrograms`' range there is
+
+  ```
+  f_j = chunk_j (rows .x7 0 ^^^ BitAdaptor.fieldBytes (outputs .x7 0)) ^^^ label
+  ```
+
+  -- no fiber sample appears. `rows` is part of the released table and `outputs .x7 0` is
+  read by the shifted game (its own programming uses `wanted = outputs .x7 0 + delta`), so
+  `f_j` is **not deferrable**. The only randomness that hides it from a second-stage
+  adversary is the bridge key `u` (equivalently `delta = c/s - u`), and the resulting charge
+  is `#{v : chunk_j (fieldBytes v) = c} / (p - 1)`, i.e. about `5.4 / 2 ^ 128` for the high
+  chunk (`2 ^ 128 / p`, with `p` about `2 ^ 253.6`) rather than `2 / 2 ^ 128`. That alone
+  would put a second-stage entry at about `7.4 / 2 ^ 128`, leave nothing for the first-stage
+  entries or the freshness event, and need two new analytic ingredients (a chunk-of-field
+  counting bound and a deferral of `u` past the whole game). **Do not re-attempt the census
+  route.**
+* **The replacement is an exact law equality, and it removes the second-stage charge
+  entirely.** Conditionally on the first stage's transcript `assign`, the doubly programmed
+  view and the singly programmed one are *the same law*:
+
+  ```lean
+  theorem compatibleLaw_double (assign) (injective) (label honest steered)
+      (fresh : assign label = none) (honestUnused : honest ∉ pinnedRange assign)
+      (steeredUnused : steered ∉ pinnedRange assign) (continuation) :
+      ((compatibleLaw assign).bind fun permutation =>
+          continuation (programmed (programmed permutation label honest) label steered)) =
+        (compatibleLaw assign).bind fun permutation =>
+          continuation (programmed permutation label steered)
+  ```
+
+  (`Proof/Erased.lean`, slice 3p, `sorryAx`-free). It is `compatibleLaw_programmed` on each
+  side plus the `repin` bijection of `Proof/Lazy.lean`: both sides are uniform over the
+  permutations compatible with the transcript re-pinned at the label to the steered range.
+  The honest programming is invisible because the image it erases is fresh and the range it
+  installs is immediately overwritten. **So the second stage can learn nothing, whatever it
+  queries and whichever branch the steering bit takes, and the hop's entire bad event is a
+  condition on the FIRST stage's transcript.** `hybridStageTwo_doubled_agree`,
+  `publicAnswer_doubled` and `doubledHidden` (slice 3o) are still correct but are no longer
+  the route: they are the pointwise comparison the census needed.
+* **The hop's bad event, in full.** With `l` the selected label of the steering gate and
+  `f_i`, `s_i` the honest and steered ranges at steering index `i`, the bad event is
+
+  > for some steering index `i`: `l` is pinned by the first stage's transcript at `i`, or
+  > `f_i` or `s_i` is a value that transcript already used.
+
+  Nothing else. In particular the **freshness half is not a separate charge**:
+  `not_freshnessHidden_of_covers` (`Proof/Charge.lean`, slice 3p) proves that those three
+  conditions already imply all four clauses of `ProgramRequest.Fresh` for every steering
+  request, using `lazyRun_covers` (a lazy run pins every tracked query its log records).
+* **The accounting, and the one thing that does not fit.** Every programmed range is
+  `chunk ^^^ label` (`slotRange`), so each of the three conditions is **one value of the
+  selected label** per pinned point, and the label is a uniform block the first stage never
+  reads (`loggedFirstStage` runs on `witnessTape.inputMacKey`, not on the sampled key). Hence
+  `uniform_keyLabel_transcript_le` (`Proof/Erased.lean`, slice 3p):
+
+  ```
+  mass ≤ 3 * pinnedCount assign / 2 ^ 128 ≤ 3 q₁ / 2 ^ 128    (per tracked index)
+  ```
+
+  * With **one** hop -- all steering indices conditioned at once -- the total is
+    `3 q₁ / 2 ^ 128 ≤ 3 q / 2 ^ 128`, comfortably inside the reserved
+    `steeringStep = 8 q / 2 ^ 128 + 6 / 2 ^ 128`. **No constant moves.**
+  * `compatibleLaw_run` conditions **one** index, and its left-hand side is an *eager*
+    `program.run idealOracle`, so a second application cannot be nested inside the first.
+    Taking one hybrid hop per steering index (three of them, at the three hash slots of a
+    `false` gate) multiplies the crude bound to `9 q₁ / 2 ^ 128`, which **exceeds**
+    `8 (q₁ + q₂) / 2 ^ 128` whenever `q₁ > 8 q₂`. The honest figure is still `3 q₁`, because
+    a log entry pins only at its own index and `Σ_i pinnedCount_i ≤ q₁`; the crude bound
+    loses that.
+  * Two ways to recover it, **both within the frozen constants**: (a) generalise
+    `Proof/Lazy.lean` to a **family** of tracked indices (`Assignment` per index,
+    `compatibleLaw` a product over indices), which makes the hop a single application and
+    the keying automatic -- `Σ_i pinnedCount (assigns i) ≤ q₁` is then one pointwise lemma;
+    or (b) keep the three hops and refine the per-hop bound to
+    `E[3 * #{entries at index i}] / 2 ^ 128`, which needs a per-index `lazyRun_pinnedCount`,
+    an expectation-form union bound, and the fact that the three lazy laws share their
+    log-marginal. **(a) is the recommendation**: it is more code but no new probabilistic
+    argument, and it deletes the hybrid chain and the expectation bookkeeping.
+* **What slice 3p landed, all machine-checked and `sorryAx`-free.**
+  `Proof/Erased.lean`: **`compatibleLaw_double`** (the law equality above),
+  **`uniform_run_compatibleLaw`** (`compatibleLaw_run` in the shape a game consumes: a
+  uniform tracked permutation before the run is the lazy transcript during the run and
+  `compatibleLaw` after it, with no `map` bookkeeping and the empty transcript discharged),
+  `transcriptHidden`, `mem_transcriptHidden`, `transcriptHidden_card`,
+  **`uniform_keyLabel_transcript_le`** (the `3 k / 2 ^ 128` charge).
+  `Proof/Lazy.lean`: `TranscriptCovers`, `mem_pinnedRange_of_pinnedInput`,
+  `pinnedRange_update_subset`, `exists_mem_support_of_mem_support_map`, `lazyAnswer_covers`,
+  **`lazyRun_covers`** (the lazy run pins every tracked query its log records and keeps the
+  transcript injective), `transcriptCovers_empty`.
+  `Proof/Charge.lean`: `freshnessHidden`, `fresh_of_notMem_freshnessHidden`,
+  **`not_freshnessHidden_of_covers`** (freshness is free given the transcript conditions).
+* **What is left, in order.** (i) the multi-index conditioning, by route (a) or (b) above;
+  (ii) the plumbing: `uniform_bind_setOracleAt` to pull the tracked index out of the sampled
+  family, `setPermutation_eq` to put the first stage into `compatibleLaw_run`'s shape,
+  `PMF.bind_comm` to move the two fiber samples inside the conditional permutation bind (they
+  are independent of it), then `compatibleLaw_double` pointwise; (iii) fit to
+  `advantage_bind_le_jointBad` with the bad set over (sample × first-stage outcome) -- the
+  differing step must be the one that produces the *outcome*, so take the outcome to be the
+  pair (first-stage outcome, second-stage result) and the continuation to be the projection;
+  (iv) `exact workPerAdvantage_of_steeringCharge adversary parameter scalar auxiliary charge`.
+  The off-curve half is still free (`steeredReleasedStageTwo_offCurve` +
+  `shiftedOutputs = outputs`).
+* **Lean gotchas this slice.**
+  * A theorem that uses `compatibleLaw_empty` / `emptyAssignment_injective` must sit **after**
+    them in `Proof/Erased.lean`; they are declared in the file's last section.
+  * `ENNReal.div_le_div_right` will not close `↑c / 2 ^ 128 ≤ 3 * ↑budget / 2 ^ 128`: the
+    right-hand numerator is an `ENNReal` product, not a cast of a `Nat` product. Rewrite with
+    `((3 * budget : Nat) : ENNReal) = 3 * (budget : ENNReal)` (`push_cast; ring`) first.
+  * `PublicQuery.fixedForward.injEq _ _ _ _ ▸ head` does not elaborate; use
+    `have : input = domain := by simpa using head`, or `show A ∧ B by simpa using equal` when
+    the `▸` is inside a term-mode argument (a bare `by simpa using equal` there has no
+    expected type).
+  * `rw [PMF.support_map] at member` fails at the dependent answer type
+    (`request.Answer`); state a generic helper
+    (`exists_mem_support_of_mem_support_map`) whose own proof does the `rw` at uniform types.
+    `exists_of_mem_support_map` (slice 3m) drops the support membership, which is not enough
+    when the sampled value's own freshness is needed.
+  * A hypothesis of the form `value = {index := i, domain := l, range := s}.range` does not
+    fire under `▸`; re-type it with `have : value = s := hypothesis` first (the projection is
+    defeq but not syntactic).
+
+**What P10 still has to do (as of slice 3p).** Exactly one thing: the hypothesis of
 `workPerAdvantage_of_steeringCharge` (`Proof/Shifted.lean`) -- the bad mass of the
 steering hop. Half (a) below is **done** (slice 3o, `shiftedReferenceGame_eq_referenceGame`)
-and half (b)'s deterministic skeleton is **done** (slice 3o, `Proof/Charge.lean`); what
-remains of (b) is the probabilistic bound. The slice-3n description is kept below for the
-census it records.
+and the comparison of the two second stages is **done** (slice 3o's pointwise version,
+slice 3p's law version); what remains is the multi-index conditioning and the plumbing of
+"Corrections from slice 3p". **The census the slice-3n and slice-3o blocks record is
+superseded: it is unsound inside the budget at `steeringBit = true`.** They are kept for
+the algebra they record, not for the accounting.
 
 **(superseded header, kept for the census)** The hypothesis of
 `workPerAdvantage_of_steering` (`Proof/Assembly.lean`). Everything else in the chain,
@@ -1109,7 +1248,7 @@ slice 3l raised only the per-query constant, from `10` to `16`.**
 | 2 twin (fiber sample → selected outputs) | S | 0 | 0 | **done** (`steeredFiberedDigestGame_eq_steeredFiberGame`) |
 | 2 twin (identify with `R(u)` + steering) | S | 0 | 0 | **done** (`steeredFiberGame_eq_steeredReferenceGame`) |
 | 7, transfer (the visible-law identification) | S | 0 | 0 | **done** (`shiftedReferenceGame_eq_referenceGame`, slice 3o) |
-| 7, charge (steering removal) | S | `8q/2^128` (`steeringStep`) | `6/2^128` | open (slice 3k built the glue and the reparametrisation tool; slice 3l priced the chunk points and proved the assembly around the hop; slice 3m built the lazy-sampling theorem; slice 3n built the erased-image independence, the four-point algebra and the entry-keyed union bound; slice 3o put both second stages under one sample and proved they agree off the hidden queries -- only the bad-mass bound is left) |
+| 7, charge (steering removal) | S | `8q/2^128` (`steeringStep`); honest figure now `3q₁/2^128` | `6/2^128` (unused) | open (slice 3k built the glue and the reparametrisation tool; slice 3l priced the chunk points and proved the assembly around the hop; slice 3m built the lazy-sampling theorem; slice 3n built the erased-image independence, the four-point algebra and the entry-keyed union bound; slice 3o put both second stages under one sample and proved they agree off the hidden queries; **slice 3p showed the second stage costs nothing at all (`compatibleLaw_double`) and reduced the hop to a first-stage transcript event, but the multi-index conditioning is not built** -- see "Corrections from slice 3p") |
 | assembly (triangle + `workPerAdvantage_of_chain`) | — | 0 | 0 | **done** (`workPerAdvantage_of_steering`, `chain_shares_eq`) |
 
 Slice 3h consumed `4·(q₁+q₂)/2^128` of the per-query budget and none of the one-time budget.
