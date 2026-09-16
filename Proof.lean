@@ -29,6 +29,7 @@ import Proof.VisibleGame
 import Proof.Chunk
 import Proof.Lazy
 import Proof.Erased
+import Proof.Family
 import Proof.Assembly
 import Proof.Shifted
 import Proof.Charge
