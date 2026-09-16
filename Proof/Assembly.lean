@@ -11,8 +11,8 @@ file shows that the identification is the *only* thing left: given it as a
 hypothesis, at the share of the budget the accounting reserves for it, the
 obligation follows by two triangle inequalities and `workPerAdvantage_of_chain`.
 
-Keeping the hop as a hypothesis rather than as a second `sorry` means the
-accounting itself is machine-checked: the three shares really do sum to
+Keeping the hop as a hypothesis rather than as a second unproved
+declaration means the accounting itself is machine-checked: the three shares sum to
 `chainPerQuery * q / 2 ^ 128 + chainOneTime`, so the value of `chainPerQuery`
 is validated end to end and the residual obligation is one crisp inequality
 between two explicitly named games.
