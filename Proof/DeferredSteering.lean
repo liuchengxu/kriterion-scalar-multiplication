@@ -67,6 +67,78 @@ theorem programmed_programmed (permutation : Equiv Block Block) (label first sec
   rw [left, right, Equiv.trans_assoc, Equiv.trans_assoc,
     swap_trans_swap (permutation label) first second freshFirst freshSecond]
 
+/-- Compose the permutation of every listed index with the swap of its two values. -/
+def swapRanges (swaps : FixedKeyIndex → Option (Block × Block))
+    (oracle : PermutationOracle FixedKeyIndex Block) : PermutationOracle FixedKeyIndex Block where
+  permutation index :=
+    match swaps index with
+    | none => oracle.permutation index
+    | some (first, second) => (oracle.permutation index).trans (Equiv.swap first second)
+
+/-- The swap the reparametrisation performs at an index both programmings touch: the honest
+range and the steered range. -/
+def swapsOf (honest steered : Programs) : FixedKeyIndex → Option (Block × Block) :=
+  fun index =>
+    (honest index).bind fun honestRequest =>
+      (steered index).map fun steeredRequest => (honestRequest.2, steeredRequest.2)
+
+/-- Programming an already programmed oracle again, at the same labels, is programming the
+combined request once on the reparametrised oracle. This is the step that turns the
+simulated game's double programming of the steering gate -- honest, then steered -- into the
+reference game's single programming, at the cost of reading the first stage on
+`swapRanges (swapsOf honest steered) oracle` instead of `oracle`. -/
+theorem programIndices_programIndices (honest steered combined : Programs)
+    (oracle : PermutationOracle FixedKeyIndex Block)
+    (untouched : ∀ index, steered index = none → combined index = honest index)
+    (covered : ∀ index label second, steered index = some (label, second) →
+      ∃ first, honest index = some (label, first))
+    (retargeted : ∀ index label second, steered index = some (label, second) →
+      combined index = some (label, second))
+    (fresh : ∀ index label first second, honest index = some (label, first) →
+      steered index = some (label, second) →
+      oracle.permutation index label ≠ first ∧ oracle.permutation index label ≠ second) :
+    programIndices steered (programIndices honest oracle) =
+      programIndices combined (swapRanges (swapsOf honest steered) oracle) := by
+  have fields : ∀ index,
+      (programIndices steered (programIndices honest oracle)).permutation index =
+        (programIndices combined (swapRanges (swapsOf honest steered) oracle)).permutation index := by
+    intro index
+    cases steeredAt : steered index with
+    | none =>
+      have swaps : swapsOf honest steered index = none := by
+        simp only [swapsOf, steeredAt, Option.map_none]
+        cases honest index <;> rfl
+      have reparametrised : (swapRanges (swapsOf honest steered) oracle).permutation index =
+          oracle.permutation index := by
+        simp only [swapRanges, swaps]
+      rw [programIndices_none steered _ index steeredAt]
+      cases honestAt : honest index with
+      | none =>
+        rw [programIndices_none honest oracle index honestAt,
+          programIndices_none combined _ index (by rw [untouched index steeredAt, honestAt]),
+          reparametrised]
+      | some pair =>
+        obtain ⟨label, range⟩ := pair
+        rw [programIndices_eq_programmed honest oracle index label range honestAt,
+          programIndices_eq_programmed combined _ index label range
+            (by rw [untouched index steeredAt, honestAt]), reparametrised]
+    | some pair =>
+      obtain ⟨label, second⟩ := pair
+      obtain ⟨first, honestAt⟩ := covered index label second steeredAt
+      obtain ⟨freshFirst, freshSecond⟩ := fresh index label first second honestAt steeredAt
+      have swaps : swapsOf honest steered index = some (first, second) := by
+        simp only [swapsOf, honestAt, steeredAt, Option.bind_some, Option.map_some]
+      have reparametrised : (swapRanges (swapsOf honest steered) oracle).permutation index =
+          (oracle.permutation index).trans (Equiv.swap first second) := by
+        simp only [swapRanges, swaps]
+      rw [programIndices_eq_programmed steered _ index label second steeredAt,
+        programIndices_eq_programmed honest oracle index label first honestAt,
+        programIndices_eq_programmed combined _ index label second
+          (retargeted index label second steeredAt),
+        programmed_programmed (oracle.permutation index) label first second freshFirst freshSecond,
+        reparametrised]
+  exact congrArg PermutationOracle.mk (funext fields)
+
 /-! ### The gates of the programmed reference view -/
 
 /-- The gate permutations of one adaptor at one coordinate bit position. -/
