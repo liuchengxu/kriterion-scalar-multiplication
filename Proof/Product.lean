@@ -200,6 +200,86 @@ theorem productPMF_bind_update [DecidableEq Value] (laws : Index → PMF Value) 
   refine congrArg (fresh (target place) * ·) (Finset.prod_congr rfl fun index member => ?_)
   rw [Function.update_of_ne (Finset.ne_of_mem_erase member)]
 
+/-! ### Coordinates a continuation never reads -/
+
+/-- Replacing one coordinate's law is invisible to a continuation that never reads that
+coordinate. -/
+theorem productPMF_bind_update_congr {Outcome : Type} [DecidableEq Value]
+    (laws : Index → PMF Value) (place : Index) (first second : PMF Value)
+    (continuation : (Index → Value) → PMF Outcome)
+    (unread : ∀ (values : Index → Value) (value : Value),
+      continuation (Function.update values place value) = continuation values) :
+    (productPMF (Function.update laws place first)).bind continuation =
+      (productPMF (Function.update laws place second)).bind continuation := by
+  have expand : productPMF (Function.update laws place first) =
+      (productPMF (Function.update laws place second)).bind fun values =>
+        first.map fun value => Function.update values place value := by
+    rw [productPMF_bind_update, Function.update_idem]
+  calc (productPMF (Function.update laws place first)).bind continuation
+      = ((productPMF (Function.update laws place second)).bind fun values =>
+          first.map fun value => Function.update values place value).bind continuation := by
+        rw [expand]
+    _ = (productPMF (Function.update laws place second)).bind continuation := by
+        rw [PMF.bind_bind]
+        refine congrArg (PMF.bind _) (funext fun values => ?_)
+        rw [PMF.bind_map]
+        simp only [Function.comp_def, unread, PMF.bind_const]
+
+/-- Two product laws that agree off a finite set of coordinates give the same game to a
+continuation that never reads those coordinates. The digest replacement needs it because
+the reference game's fiber sample is taken at the *selected* outputs, which differ from the
+sampled hash secrets exactly at the gates whose input bit is set — and the fibers of those
+gates are programmed nowhere. -/
+theorem productPMF_bind_congr {Outcome : Type} [DecidableEq Value]
+    (first second : Index → PMF Value) (changed : Finset Index)
+    (continuation : (Index → Value) → PMF Outcome)
+    (agree : ∀ index ∉ changed, first index = second index)
+    (unread : ∀ index ∈ changed, ∀ (values : Index → Value) (value : Value),
+      continuation (Function.update values index value) = continuation values) :
+    (productPMF first).bind continuation = (productPMF second).bind continuation := by
+  set mix : Finset Index → Index → PMF Value :=
+    fun chosen index => if index ∈ chosen then first index else second index with mixDef
+  have step : ∀ chosen : Finset Index, chosen ⊆ changed →
+      (productPMF (mix chosen)).bind continuation =
+        (productPMF second).bind continuation := by
+    intro chosen
+    induction chosen using Finset.induction with
+    | empty =>
+      intro _
+      have same : mix ∅ = second := by
+        funext index
+        simp only [mixDef, Finset.notMem_empty, if_false]
+      rw [same]
+    | insert place chosen absent inductionHypothesis =>
+      intro subset
+      have placeMember : place ∈ changed := subset (Finset.mem_insert_self place chosen)
+      have restSubset : chosen ⊆ changed := fun index member =>
+        subset (Finset.mem_insert_of_mem member)
+      have inserted : mix (insert place chosen) =
+          Function.update (mix chosen) place (first place) := by
+        funext index
+        by_cases same : index = place
+        · subst same
+          simp only [mixDef, Finset.mem_insert, true_or, if_true, Function.update_self]
+        · simp only [mixDef, Finset.mem_insert, same, false_or, Function.update_of_ne same]
+      have unchanged : mix chosen = Function.update (mix chosen) place (second place) := by
+        funext index
+        by_cases same : index = place
+        · subst same
+          simp only [mixDef, if_neg absent, Function.update_self]
+        · rw [Function.update_of_ne same]
+      rw [inserted, productPMF_bind_update_congr (mix chosen) place (first place) (second place)
+        continuation (unread place placeMember), ← unchanged]
+      exact inductionHypothesis restSubset
+  have full : mix changed = first := by
+    funext index
+    by_cases member : index ∈ changed
+    · simp only [mixDef, if_pos member]
+    · simp only [mixDef, if_neg member]
+      exact (agree index member).symm
+  have complete := step changed Finset.Subset.rfl
+  rwa [full] at complete
+
 /-! ### Coordinatewise subtypes -/
 
 omit [DecidableEq Index] in

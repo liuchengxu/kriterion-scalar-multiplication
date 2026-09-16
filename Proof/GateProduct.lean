@@ -104,6 +104,45 @@ theorem hashFibers_total_difference :
   rw [Finset.sum_const, Finset.card_univ, card_gate, nsmul_eq_mul]
   exact mul_le_mul_of_nonneg_left hashFiber_total_difference (by norm_num)
 
+/-! ### Gates a continuation never reads -/
+
+/-- Replace one gate's value. -/
+def setGate {Value : Type} (gate : Gate) (value : Value) (values : GateValues Value) :
+    GateValues Value :=
+  fun adaptor position => if (adaptor, position) = gate then value else values adaptor position
+
+theorem setGate_apply {Value : Type} (gate : Gate) (value : Value) (values : GateValues Value)
+    (adaptor : CurveAdaptor) (position : Fin coordinateBitCount) :
+    setGate gate value values adaptor position =
+      if (adaptor, position) = gate then value else values adaptor position := rfl
+
+/-- Replacing one gate's value is the coordinate update at that gate. -/
+theorem setGate_gateCurry {Value : Type} (gate : Gate) (value : Value) (values : Gate → Value) :
+    setGate gate value (gateCurry Value values) =
+      gateCurry Value (Function.update values gate value) := by
+  funext adaptor position
+  simp only [setGate_apply, gateCurry_apply]
+  by_cases same : (adaptor, position) = gate
+  · rw [if_pos same, same, Function.update_self]
+  · rw [if_neg same, Function.update_of_ne same]
+
+/-- Two fiber samples whose outputs agree off a finite set of gates give the same game to a
+continuation that never reads those gates' fibers. -/
+theorem uniformHashFibers_bind_congr {Outcome : Type} (first second : GateValues BaseField)
+    (changed : Finset Gate) (continuation : GateValues (BitVec 384) → PMF Outcome)
+    (agree : ∀ gate ∉ changed, first gate.1 gate.2 = second gate.1 gate.2)
+    (unread : ∀ gate ∈ changed, ∀ (fibers : GateValues (BitVec 384)) (value : BitVec 384),
+      continuation (setGate gate value fibers) = continuation fibers) :
+    (uniformHashFibers first).bind continuation =
+      (uniformHashFibers second).bind continuation := by
+  rw [uniformHashFibers_eq_gateProduct, uniformHashFibers_eq_gateProduct, gateProduct, gateProduct,
+    PMF.bind_map, PMF.bind_map]
+  refine productPMF_bind_congr _ _ changed (continuation ∘ gateCurry (BitVec 384))
+    (fun gate notMember => congrArg uniformHashFiber (agree gate notMember)) ?_
+  intro gate member values value
+  simp only [Function.comp_def]
+  rw [← setGate_gateCurry, unread gate member]
+
 /-! ### Resampling the steering gate -/
 
 /-- The steering gate: adaptor `x7`, bit position `0`. -/
