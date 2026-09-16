@@ -6,9 +6,9 @@ A hop either swaps the sampled law (its cost is the total difference of the two
 laws), or swaps the continuation (its cost is the largest pointwise
 advantage), or is identical until a bad event (its cost is the mass of the bad
 event). The chain's ten identical-until-bad hops each cost `2 q / 2 ^ 128`, and
-the one-time terms -- the mask law, the 1270 digest replacements and the
-freshness of the two chunks the steering reparametrisation swaps -- together
-stay below `2 ^ -119`, far below the `2 ^ -101` the arithmetic tail needs.
+the one-time terms -- the mask law and the 1270 digest replacements on each side,
+plus the freshness of the two chunks the steering reparametrisation swaps -- together
+stay below `2 ^ -118`, far below the `2 ^ -101` the arithmetic tail needs.
 -/
 
 import Proof.Distance
@@ -92,14 +92,19 @@ theorem baseFieldModulus_ge : (2 : ℝ) ^ 253 ≤ (baseFieldModulus : ℝ) := by
   have bound : ((2 ^ 253 : Nat) : ℝ) ≤ (baseFieldModulus : ℝ) := Nat.cast_le.mpr (by decide)
   rwa [Nat.cast_pow, Nat.cast_ofNat] at bound
 
-/-- The one-time terms of the chain: the uniform nonzero mask against the uniform field
-mask, the digest replacement of all 1270 gates, and the freshness of the two chunks the
-steering reparametrisation swaps. -/
-def chainOneTime : ℝ :=
-  2 / (baseFieldModulus : ℝ) + 1270 * ((baseFieldModulus : ℝ) / 2 ^ 384) + 6 / 2 ^ 128
+/-- The one-time terms of **one** side of the chain: the uniform nonzero mask against the
+uniform field mask, and the digest replacement of all 1270 gates. Both the hybrid side and
+the simulated side pay this, because each side replaces the fresh secrets of its own
+reparametrisation by the reference game's coordinates. -/
+def sideOneTime : ℝ :=
+  2 / (baseFieldModulus : ℝ) + 1270 * ((baseFieldModulus : ℝ) / 2 ^ 384)
 
-/-- The one-time terms stay below `2 ^ -119`. -/
-theorem chainOneTime_lt : chainOneTime < 1 / 2 ^ 119 := by
+/-- The one-time terms of the chain: one `sideOneTime` for the hybrid side, one for the
+simulated side, and the freshness of the two chunks the steering reparametrisation swaps. -/
+def chainOneTime : ℝ := sideOneTime + sideOneTime + 6 / 2 ^ 128
+
+/-- The one-time terms stay below `2 ^ -118`. -/
+theorem chainOneTime_lt : chainOneTime < 1 / 2 ^ 118 := by
   have modulusPos : (0 : ℝ) < baseFieldModulus :=
     lt_of_lt_of_le (by positivity) baseFieldModulus_ge
   have maskLe : 2 / (baseFieldModulus : ℝ) ≤ 1 / 2 ^ 130 := by
@@ -117,11 +122,12 @@ theorem chainOneTime_lt : chainOneTime < 1 / 2 ^ 119 := by
     calc 1270 * ((baseFieldModulus : ℝ) / 2 ^ 384) ≤ 1270 * (1 / 2 ^ 130) :=
           mul_le_mul_of_nonneg_left step (by norm_num)
       _ = 1270 / 2 ^ 130 := by ring
+  have sideLe : sideOneTime ≤ 1 / 2 ^ 130 + 1270 / 2 ^ 130 := add_le_add maskLe digestsLe
   unfold chainOneTime
-  calc 2 / (baseFieldModulus : ℝ) + 1270 * ((baseFieldModulus : ℝ) / 2 ^ 384) + 6 / 2 ^ 128
-      ≤ 1 / 2 ^ 130 + 1270 / 2 ^ 130 + 6 / 2 ^ 128 :=
-        add_le_add (add_le_add maskLe digestsLe) le_rfl
-    _ < 1 / 2 ^ 119 := by norm_num
+  calc sideOneTime + sideOneTime + 6 / 2 ^ 128
+      ≤ (1 / 2 ^ 130 + 1270 / 2 ^ 130) + (1 / 2 ^ 130 + 1270 / 2 ^ 130) + 6 / 2 ^ 128 :=
+        add_le_add (add_le_add sideLe sideLe) le_rfl
+    _ < 1 / 2 ^ 118 := by norm_num
 
 theorem chainOneTime_le : chainOneTime ≤ 1 / 2 ^ 101 :=
   le_of_lt (lt_of_lt_of_le chainOneTime_lt (by norm_num))
