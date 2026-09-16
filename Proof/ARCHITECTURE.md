@@ -17,6 +17,12 @@ the mask law and the hash fiber law) and the structural core of P7
 steering is the shift at `(x7, 0)`, and the double programming is the reference programming on a
 reparametrised permutation). Nothing in step 7 contradicted the chain.
 
+Slice 3f closed **all of P6** (`Proof/Product.lean` + `Proof/GateProduct.lean`: the tensorisation)
+and **all of P7** (`Proof/GateProduct.lean`: the fiber marginal; `Proof/FreshBridge.lean`: the
+`programAll` → `programIndices` bridge). The remaining machinery item is P3's stage-2 half; the
+rest is assembly (P9b + P10). Nothing in the tensorisation or the bridge contradicted the chain,
+and no constant moved.
+
 ## 1. The correction that drives the architecture
 
 The slice-3b analysis of the three cases (A off-curve, B on-curve/bit false, C on-curve/bit
@@ -192,7 +198,33 @@ instead of the whole key; `uniform_bind_setKeyLabel` / `uniform_keyLabel_mem` ar
   `PMF.ofFintype (fun values => ∏ gate, lawOf gate (values gate))` (sum-to-one by
   `Finset.prod_univ_sum` and `Fintype.piFinset_univ`), and swap one coordinate at a time by
   `Finset` induction, each step costing `hashFiber_total_difference` by the same product-sum
-  exchange. That is the open half of P6.
+  exchange.
+
+**Corrections from slice 3f.**
+
+* The tensorisation recipe above is exactly what was built, on the index type
+  `Gate = CurveAdaptor × Fin coordinateBitCount` (`card_gate : Fintype.card Gate = 1270`) with
+  `gateCurry : (Gate → Value) ≃ GateValues Value` carrying it to the nested function type.
+  The one-coordinate swap needed no explicit interpolating family beyond
+  `Function.update`: `totalDifference_productPMF_update` is an **equality** computation (split off
+  the coordinate, sum the rest to one), and the `Finset` induction over the mixture
+  `if index ∈ chosen then first index else second index` is the only interpolation.
+* The step-2 charge is now a single machine-checked constant:
+  `hashFibers_total_difference ≤ 1270 · p / 2^384`, i.e. `< 1270 · 2^-130 < 2^-119`, which is the
+  `2 · 1270 · 2^-131` of §4 written without the factor-of-two bookkeeping. `ε₀ < 2^-119` and
+  `K ≤ 10` are unchanged.
+* The fiber marginal is `uniformHashFibers_setSteering`: resampling the steering gate's fiber on
+  top of `uniformHashFibers o` is `uniformHashFibers` of the outputs with the steering output
+  replaced. With `shiftSteering_eq_setSteering` (`shiftSteering shift o = setSteering (o x7 0 +
+  shift) o`) the simulated game's *two* samples (the honest fibers, then `uniformHashFiber
+  wanted`) are the reference game's *one* sample at the shifted outputs — no extra cost.
+* The freshness bridge costs nothing beyond the hop already charged: `programAll_eq_programIndices`
+  needs (i) every request fresh against the log the steering sees, which is the bad event of the
+  hop, and (ii) the requests to sit at **distinct indices**, which is a closed fact about the
+  three hash slots / two pad slots (`steerRequests_distinct`), not a probabilistic one.
+* `steerTo_eq_map` writes the `true` branch of the steering as a fiber sample it ignores
+  (`PMF.map_const`), so both branches have the reference game's shape "sample a fiber, then
+  program". P10 can therefore treat the two branches uniformly.
 
 Two things the slice-3b analysis had that this chain does **not** need: hiding all 1270
 unselected-label values by an explicit shift (absorbed by `P4`), and the `(2^128 − q)`
@@ -208,8 +240,8 @@ probability exactly `k/2^128`).
 | P3 | independence bad-bounds: union bound over a log (`hidden_label_bound`); one label of a uniform key is a uniform block (`setKeyLabel` involution, `map_keyLabel_uniform`, `uniform_keyLabel_mem`); hidden sets of one programmed permutation, 2 per direction (`forwardHidden`, `inverseHidden`, `hiddenLabels_card`, `publicAnswer_programIndices_single`); stage-1 bound with the key sampled up front (`firstStage_key_deferred`, `firstStage_hidden_le`) | `Proof/Hidden.lean` | **stage 1 done**; stage-2 (unselected-label) bound open |
 | P4 | static bijection raw ↔ middle; `c0` affine in `mask`; visible law uniform off-curve, shift law on-curve | `Proof/Reference.lean`: `middleEquiv`, `Coordinates.table_c0_eq`, `visibleCoordinates_offCurve`, `visibleCoordinates_onCurve` | **done** |
 | P5 | deferred sampling: transfer form `twoStageGame_congr` (equal joint laws of `(view, rest r)` per first-stage result ⇒ equal games) and factored form `twoStageGame_eq_deferredGame`; both by `tsum_map_mul` + `ENNReal.tsum_comm` | `Proof/Deferred.lean`: `twoStageGame`, `deferredGame`, `twoStageGame_apply`, `twoStageGame_congr`, `twoStageGame_eq_deferredGame`, `map_view_of_joint` | **done** |
-| P6 | TV facts: total difference `∑ |law₁ − law₂|` with triangle inequality and both bind sub-additivities (`bind_apply_sub_le` swaps the sampled law, `bind_apply_sub_le_of_le` swaps the continuation); `U(F*)` vs `U(F)` total difference `2/p`; one 384-bit digest vs (`U(F)` then `uniformHashFiber`) total difference `≤ p/2^384` (fiber sizes are within one residue block of `2^384/p`, by the two injections `fiberElement`/`fiberIndex`) | `Proof/Distance.lean`: `totalDifference`, `totalDifference_triangle`, `bind_apply_sub_le`, `bind_apply_sub_le_of_le`, `mask_total_difference`, `card_hashFiber_lower`/`_upper`, `count_mul_difference_le`, `hashFiber_total_difference` | **per coordinate done**; the 1270-gate product (tensorisation) open |
-| P7 | `steer` in deferred form: the programmed reference view releases every selected output and hence `bridgeKey + mask·curveGap`, so on-curve `current = u` and `wanted = o x7 0 + (c/s − u)` — the steering is `shiftMiddle (c/s − u)` on the visible data; the double programming (honest, then steered) of the steering gate is `R`'s single programming of the shifted outputs on `π° ↦ swap(honest range, steered range) ∘ π°` | `Proof/DeferredSteering.lean`: `swap_trans_swap`, `programmed_programmed`, `programIndices_programIndices`, `hashToField_programSelected`, `decrypt_programSelected`, `evaluate_programSelected`, `curveEvaluate_programSelected`, `steerTo`, `steer_programSelected`, `steerPrograms`, `programIndices_steerPrograms` | **core done**; the `programAll` → `programIndices` bridge and the fiber marginal open |
+| P6 | TV facts: total difference `∑ |law₁ − law₂|` with triangle inequality and both bind sub-additivities (`bind_apply_sub_le` swaps the sampled law, `bind_apply_sub_le_of_le` swaps the continuation); `U(F*)` vs `U(F)` total difference `2/p`; one 384-bit digest vs (`U(F)` then `uniformHashFiber`) total difference `≤ p/2^384` (fiber sizes are within one residue block of `2^384/p`, by the two injections `fiberElement`/`fiberIndex`); **tensorisation**: the law of independent coordinates on a finite function type, its uniform / bind / one-coordinate-resampling laws, the uniform law of a coordinatewise subtype as a product, and `totalDifference (⊗ first) (⊗ second) ≤ ∑ coordinates`; instantiated at the 1270 gates: `1270 · p/2^384` for the whole digest family | `Proof/Distance.lean`: `totalDifference`, `totalDifference_triangle`, `bind_apply_sub_le`, `bind_apply_sub_le_of_le`, `mask_total_difference`, `card_hashFiber_lower`/`_upper`, `count_mul_difference_le`, `hashFiber_total_difference`; `Proof/Product.lean`: `productPMF`, `productPMF_apply`, `uniformOfFintype_pi`, `productPMF_bind`, `productPMF_bind_update`, `uniform_subtypePi_map_val`, `totalDifference_productPMF_update`, `totalDifference_productPMF`, `map_equiv_apply`, `uniformOfFintype_map_bijection`, `totalDifference_map_bijection`; `Proof/GateProduct.lean`: `Gate`, `gateCurry`, `gateProduct`, `card_gate`, `uniformOfFintype_gateValues`, `uniformHashFibers_eq_gateProduct`, `hashFibers_total_difference` | **done** |
+| P7 | `steer` in deferred form: the programmed reference view releases every selected output and hence `bridgeKey + mask·curveGap`, so on-curve `current = u` and `wanted = o x7 0 + (c/s − u)` — the steering is `shiftMiddle (c/s − u)` on the visible data; the double programming (honest, then steered) of the steering gate is `R`'s single programming of the shifted outputs on `π° ↦ swap(honest range, steered range) ∘ π°` ; the simulator's skip-if-logged `programAll` is the unconditional `programIndices` whenever every request is fresh (the hop's bad event) and the requests sit at distinct indices; resampling the steering gate's fiber on the reference fiber law is the reference fiber law of the shifted outputs | `Proof/DeferredSteering.lean`: `swap_trans_swap`, `programmed_programmed`, `programIndices_programIndices`, `hashToField_programSelected`, `decrypt_programSelected`, `evaluate_programSelected`, `curveEvaluate_programSelected`, `steerTo`, `steer_programSelected`, `steerPrograms`, `programIndices_steerPrograms`; `Proof/FreshBridge.lean`: `programsOfRequests`, `programIndices_programPermutation`, `programAll_eq_programIndices`, `steerRequests`, `steerTo_eq_map`, `steerRequests_distinct`, `programsOfRequests_steerRequests`, `programAll_steerRequests`; `Proof/GateProduct.lean`: `setSteering_gateCurry`, `uniformHashFibers_setSteering`, `shiftSteering_eq_setSteering` | **done** |
 | P8 | arithmetic tail `ε ≤ K q/2^128 + ε₀`, `K ≤ 2^28`, `ε₀ ≤ 2^-101` ⇒ `WorkPerAdvantage 100 (q+1) ε`; `advantage ≤ 1` | `Proof/Reference.lean`: `workPerAdvantage_of_le`, `advantage_le_one` | **done** |
 | P9a | `R(b)` as a `PMF Bool`: `programIndices` (unconditional partial programming), `gateKey`/`selectedLabel`/`slotRange`/`tableRow`, `selectedPrograms`, `HashFibers`/`uniformHashFibers`, `programSelected`, `referenceStage2`, `referenceGame`; `run_idealOracle_support` (a run changes only the log); `selectedPrograms_hash`/`_pad`/`_label` | `Proof/ReferenceGame.lean` | **done** |
 | P9b | unfold `idealGame` for `hybridSimulator` and `simulator` into the shape of §4 (as `hybridGame_eq_core` does), marginalize unused tape fields (`uniform_bind_setBridge` pattern) | `Proof/Privacy.lean` has the hybrid half | open |
@@ -246,3 +278,17 @@ shows a logged run depends only on the view and the initial log) and `slotBit`/`
   (`curveEvaluate_programSelected`).
 * `PermutationOracle` has no `ext` lemma; close an oracle equality with
   `congrArg PermutationOracle.mk (funext …)`.
+* Applying a product lemma whose statement mentions `PMF.uniformOfFintype` on a **subtype of a
+  function type** directly against an expected type hits `maximum recursion depth`: the expected
+  type fixes the `Fintype` instances first and unification unfolds `Fintype (BitVec 384)`, which
+  tries to evaluate `2 ^ 384`. Elaborate it without an expected type first
+  (`have base := uniform_subtypePi_map_val …`) and then `exact base` / assign it to a typed
+  `have`; the defeq check afterwards is cheap. The same trick fixes the analogous failure for a
+  whole-term `rfl` between two `PMF.map`s: state the function equality as a separate
+  `funext … rfl` and `rw` it instead.
+* `decide` refuses a goal that still mentions free variables even when the decidable part is
+  closed (e.g. `List.Pairwise (·.index ≠ ·.index) [⟨i₀, label, range₀⟩, …]`). `simp only` the
+  list structure away first (`List.pairwise_cons`, `List.mem_cons`, `forall_eq`, `false_implies`,
+  `implies_true`) so that only the closed index inequalities remain, then `decide`.
+* `omit [inst] in` must come **before** the doc comment of the declaration it modifies, not
+  between the doc comment and the `theorem` keyword.
