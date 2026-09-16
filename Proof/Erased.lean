@@ -23,10 +23,11 @@ learns nothing about `ρ`, and a union bound over its log charges each entry
 -/
 
 import Proof.Lazy
+import Proof.Retarget
 
 namespace Kriterion.ArgoMAC.Security
 
-open Cryptography
+open BN254 Cryptography
 
 noncomputable section
 
@@ -150,6 +151,107 @@ theorem erased_touch_le {Result : Type} {budget : Nat} (index : FixedKeyIndex)
   have bound := run_idealOracle_log_length program (setPermutation state index view) output
     runMember
   rwa [setPermutation_log] at bound
+
+/-! ### The four points at which the double programming differs -/
+
+theorem programmed_apply (permutation : Equiv Block Block) (label range input : Block) :
+    programmed permutation label range input =
+      Equiv.swap (permutation label) range (permutation input) := rfl
+
+theorem programmed_symm_apply (permutation : Equiv Block Block) (label range value : Block) :
+    (programmed permutation label range).symm value =
+      permutation.symm (Equiv.swap (permutation label) range value) := by
+  rw [programmed, Equiv.symm_trans_apply, Equiv.symm_swap]
+
+/-- Off the two forward points, programming a label twice answers a forward query as
+programming it once to the second range. The two points are the preimages of the two
+ranges. -/
+theorem programmed_programmed_apply_of_ne (permutation : Equiv Block Block)
+    (label honest steered input : Block) (notHonest : permutation input ≠ honest)
+    (notSteered : permutation input ≠ steered) :
+    programmed (programmed permutation label honest) label steered input =
+      programmed permutation label steered input := by
+  rw [programmed_apply (programmed permutation label honest), programmed_apply_label,
+    programmed_apply, programmed_apply]
+  by_cases same : permutation input = permutation label
+  · rw [same, Equiv.swap_apply_left, Equiv.swap_apply_left, Equiv.swap_apply_left]
+  · rw [Equiv.swap_apply_of_ne_of_ne same notHonest,
+      Equiv.swap_apply_of_ne_of_ne same notSteered,
+      Equiv.swap_apply_of_ne_of_ne notHonest notSteered]
+
+/-- Off the two inverse points, programming a label twice answers an inverse query as
+programming it once to the second range. The two points are the first range and the image
+the programming erases. -/
+theorem programmed_programmed_symm_apply_of_ne (permutation : Equiv Block Block)
+    (label honest steered value : Block) (notHonest : value ≠ honest)
+    (notErased : value ≠ permutation label) :
+    (programmed (programmed permutation label honest) label steered).symm value =
+      (programmed permutation label steered).symm value := by
+  rw [programmed_symm_apply (programmed permutation label honest), programmed_apply_label,
+    programmed_symm_apply, programmed_symm_apply]
+  refine congrArg permutation.symm ?_
+  by_cases same : value = steered
+  · rw [same, Equiv.swap_apply_right honest steered,
+      Equiv.swap_apply_right (permutation label) honest,
+      Equiv.swap_apply_right (permutation label) steered]
+  · rw [Equiv.swap_apply_of_ne_of_ne notHonest same,
+      Equiv.swap_apply_of_ne_of_ne notErased notHonest,
+      Equiv.swap_apply_of_ne_of_ne notErased same]
+
+/-- The queries at which programming one index twice -- honestly and then steered -- differs
+from programming it once to the steered range. A forward query is hidden when its image is
+one of the two ranges; an inverse query when its argument is the honest range or the image
+the programming erases. Queries at other indices and non-permutation queries hide nothing. -/
+def steeringHidden (permutation : Equiv Block Block) (index : FixedKeyIndex)
+    (label honest steered : Block) : Query → Prop
+  | .fixedForward queryIndex input =>
+      queryIndex = index ∧ (permutation input = honest ∨ permutation input = steered)
+  | .fixedInverse queryIndex value =>
+      queryIndex = index ∧ (value = honest ∨ value = permutation label)
+  | _ => False
+
+/-- Off its four hidden points, the doubly programmed view answers a query as the singly
+programmed one. This is the identical-until-bad input of the steering hop. -/
+theorem publicAnswer_steeringHidden (first second : View) (index : FixedKeyIndex)
+    (permutation : Equiv Block Block) (label honest steered : Block)
+    (sameRest : first.2 = second.2)
+    (others : ∀ other, other ≠ index →
+      first.1.permutation other = second.1.permutation other)
+    (doubled : first.1.permutation index =
+      programmed (programmed permutation label honest) label steered)
+    (single : second.1.permutation index = programmed permutation label steered)
+    (query : Query)
+    (good : ¬ steeringHidden permutation index label honest steered query) :
+    publicAnswer first query = publicAnswer second query := by
+  cases query with
+  | fixedForward queryIndex input =>
+    show first.1.permutation queryIndex input = second.1.permutation queryIndex input
+    by_cases same : queryIndex = index
+    · subst same
+      simp only [steeringHidden, true_and, not_or] at good
+      rw [doubled, single]
+      exact programmed_programmed_apply_of_ne permutation label honest steered input good.1
+        good.2
+    · rw [others queryIndex same]
+  | fixedInverse queryIndex value =>
+    show (first.1.permutation queryIndex).symm value =
+      (second.1.permutation queryIndex).symm value
+    by_cases same : queryIndex = index
+    · subst same
+      simp only [steeringHidden, true_and, not_or] at good
+      rw [doubled, single]
+      exact programmed_programmed_symm_apply_of_ne permutation label honest steered value
+        good.1 good.2
+    · rw [others queryIndex same]
+  | encForward queryIndex value =>
+    exact congrArg (fun rest : PermutationOracle Garbling.EncIndex Block ×
+      (BaseField → Block × Block) => rest.1.permutation queryIndex value) sameRest
+  | encInverse queryIndex value =>
+    exact congrArg (fun rest : PermutationOracle Garbling.EncIndex Block ×
+      (BaseField → Block × Block) => (rest.1.permutation queryIndex).symm value) sameRest
+  | hash value =>
+    exact congrArg (fun rest : PermutationOracle Garbling.EncIndex Block ×
+      (BaseField → Block × Block) => randomOracleAnswer rest.2 value) sameRest
 
 end
 
