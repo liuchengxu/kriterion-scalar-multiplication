@@ -35,6 +35,29 @@ theorem advantage_bind_le_bad {Sample : Type} (first second : PMF Sample)
     {true} agreeLaw agreeContinuation
   rwa [PMF.toOuterMeasure_apply_singleton, PMF.toOuterMeasure_apply_singleton] at base
 
+/-- An identical-until-bad hop whose bad event depends on the outcome as well as on the
+sample. Each hop of the chain swaps a stage's oracle view, and the queries that see the
+swap are the entries of the run's own log, so the bad event is not a property of the
+sample alone. It costs the mass of the bad event under the joint law of the second game. -/
+theorem advantage_bind_map_le_jointBad {Sample Outcome : Type} (law : PMF Sample)
+    (first second : Sample → PMF Outcome) (project : Outcome → Bool)
+    (bad : Set (Sample × Outcome))
+    (agree : ∀ pair ∉ bad, first pair.1 pair.2 = second pair.1 pair.2) :
+    advantage ((law.bind first).map project) ((law.bind second).map project) ≤
+      ((jointLaw law second).toOuterMeasure bad).toReal := by
+  have joint := Probability.identical_until_bad (jointLaw law first) (jointLaw law second) bad
+    (Prod.snd ⁻¹' (project ⁻¹' ({true} : Set Bool))) (by
+      rintro ⟨sample, outcome⟩ good
+      rw [jointLaw_apply, jointLaw_apply, agree (sample, outcome) good])
+  have expand (continuation : Sample → PMF Outcome) :
+      ((law.bind continuation).map project) true =
+        (jointLaw law continuation).toOuterMeasure
+          (Prod.snd ⁻¹' (project ⁻¹' ({true} : Set Bool))) := by
+    rw [← PMF.toOuterMeasure_apply_singleton, PMF.toOuterMeasure_map_apply,
+      ← jointLaw_map_snd law continuation, PMF.toOuterMeasure_map_apply]
+  rw [advantage_eq, expand first, expand second]
+  exact joint
+
 /-- Swapping the sampled law of a game costs the total difference of the two laws. -/
 theorem advantage_bind_le_totalDifference {Sample : Type} [Fintype Sample]
     (first second : PMF Sample) (continuation : Sample → PMF Bool) :

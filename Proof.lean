@@ -20,3 +20,4 @@ import Proof.GameShape
 import Proof.Chain
 import Proof.Reparametrise
 import Proof.DeferredSteering
+import Proof.HybridChain
