@@ -272,6 +272,13 @@ theorem uniformOfFintype_bind_of_equiv {Value Other Result : Type} [Fintype Valu
   rw [Fintype.card_congr bijection]
   exact bijection.sum_comp fun value => (Fintype.card Other : ENNReal)⁻¹ * continuation value result
 
+/-- A mapped law continued is the law continued after the map. -/
+theorem bind_of_map {Value Other Result : Type} (law : PMF Value) (step : Value → Other)
+    (continuation : Other → PMF Result) :
+    (law.map step).bind continuation = law.bind fun value => continuation (step value) := by
+  rw [PMF.map, PMF.bind_bind]
+  exact congrArg (PMF.bind _) (funext fun value => PMF.pure_bind _ _)
+
 /-- A uniform sample mapped out of a subtype is a bind over the subtype. -/
 theorem uniform_map_val_bind {Value Result : Type} {predicate : Value → Prop}
     [Fintype {value // predicate value}] [Nonempty {value // predicate value}]
@@ -605,6 +612,404 @@ theorem compatibleLaw_inverse {Result : Type} (assign : Assignment)
   exact (compatibleLaw_bind_symm (Function.update assign input (some value))
     (update_injective assign injective input value fresh)
     (fun permutation => continuation input permutation)).symm
+
+/-! ### Supports -/
+
+theorem compatibleLaw_support (assign : Assignment) (injective : AssignmentInjective assign)
+    {permutation : Equiv Block Block} (member : permutation ∈ (compatibleLaw assign).support) :
+    Compatible assign permutation := by
+  rw [compatibleLaw_eq assign (nonempty_compatible assign injective), PMF.support_map] at member
+  obtain ⟨witness, _, rfl⟩ := member
+  exact witness.2
+
+theorem freshValueLaw_support (assign : Assignment)
+    (nonempty : Nonempty {value : Block // value ∉ pinnedRange assign}) {value : Block}
+    (member : value ∈ (freshValueLaw assign).support) : value ∉ pinnedRange assign := by
+  rw [freshValueLaw_eq assign nonempty, PMF.support_map] at member
+  obtain ⟨witness, _, rfl⟩ := member
+  exact witness.2
+
+theorem notMem_pinnedRange_of_pinnedInput_eq_none (assign : Assignment)
+    (injective : AssignmentInjective assign) {value : Block}
+    (transposed : pinnedInput assign value = none) : value ∉ pinnedRange assign := by
+  rintro ⟨input, pin⟩
+  rw [(pinnedInput_eq_some_iff assign injective value input).mpr pin] at transposed
+  exact absurd transposed (by simp)
+
+/-! ### The lazy handler -/
+
+/-- Replace the fixed-key permutation at one index. -/
+def setPermutation (state : State) (index : FixedKeyIndex) (permutation : Equiv Block Block) :
+    State :=
+  { state with view := (⟨fun other => if other = index then permutation else
+      state.view.1.permutation other⟩, state.view.2) }
+
+theorem setPermutation_log (state : State) (index : FixedKeyIndex)
+    (permutation : Equiv Block Block) : (setPermutation state index permutation).log = state.log :=
+  rfl
+
+theorem setPermutation_logged (state : State) (index : FixedKeyIndex)
+    (permutation : Equiv Block Block) (request : Query) :
+    { setPermutation state index permutation with log := request :: state.log } =
+      setPermutation { state with log := request :: state.log } index permutation := rfl
+
+theorem publicAnswer_setPermutation_forward (state : State) (index : FixedKeyIndex)
+    (permutation : Equiv Block Block) (domain : Block) :
+    publicAnswer (setPermutation state index permutation).view
+        (PublicQuery.fixedForward index domain) = permutation domain := by
+  simp only [publicAnswer, setPermutation, if_pos]
+  rfl
+
+theorem publicAnswer_setPermutation_inverse (state : State) (index : FixedKeyIndex)
+    (permutation : Equiv Block Block) (range : Block) :
+    publicAnswer (setPermutation state index permutation).view
+        (PublicQuery.fixedInverse index range) = permutation.symm range := by
+  simp only [publicAnswer, setPermutation, if_pos]
+  rfl
+
+theorem publicAnswer_setPermutation_forward_of_ne (state : State) (index queryIndex : FixedKeyIndex)
+    (permutation : Equiv Block Block) (domain : Block) (different : queryIndex ≠ index) :
+    publicAnswer (setPermutation state index permutation).view
+        (PublicQuery.fixedForward queryIndex domain) =
+      publicAnswer state.view (PublicQuery.fixedForward queryIndex domain) := by
+  simp only [publicAnswer, setPermutation, if_neg different]
+  rfl
+
+theorem publicAnswer_setPermutation_inverse_of_ne (state : State) (index queryIndex : FixedKeyIndex)
+    (permutation : Equiv Block Block) (range : Block) (different : queryIndex ≠ index) :
+    publicAnswer (setPermutation state index permutation).view
+        (PublicQuery.fixedInverse queryIndex range) =
+      publicAnswer state.view (PublicQuery.fixedInverse queryIndex range) := by
+  simp only [publicAnswer, setPermutation, if_neg different]
+  rfl
+
+/-- The lazy handler answers a tracked fixed-key query from the assignment, extending it by a
+uniform choice among the free values when the query is not yet pinned, and answers every other
+query from the view. -/
+def lazyAnswer (index : FixedKeyIndex) (view : View) :
+    (request : Query) → Assignment → PMF (request.Answer × Assignment)
+  | .fixedForward queryIndex domain, assign =>
+      if queryIndex = index then
+        (assign domain).elim
+          ((freshValueLaw assign).map fun value =>
+            (value, Function.update assign domain (some value)))
+          (fun value => PMF.pure (value, assign))
+      else PMF.pure (view.1.permutation queryIndex domain, assign)
+  | .fixedInverse queryIndex range, assign =>
+      if queryIndex = index then
+        (pinnedInput assign range).elim
+          ((freshInputLaw assign).map fun domain =>
+            (domain, Function.update assign domain (some range)))
+          (fun domain => PMF.pure (domain, assign))
+      else PMF.pure ((view.1.permutation queryIndex).symm range, assign)
+  | .encForward queryIndex domain, assign =>
+      PMF.pure (view.2.1.permutation queryIndex domain, assign)
+  | .encInverse queryIndex range, assign =>
+      PMF.pure ((view.2.1.permutation queryIndex).symm range, assign)
+  | .hash point, assign => PMF.pure (randomOracleAnswer view.2.2 point, assign)
+
+/-- The lazy run: the tracked permutation is never sampled, only its transcript. -/
+def lazyRun {Result : Type} (index : FixedKeyIndex) :
+    {budget : Nat} →
+      OracleProgram (publicOracleSpec FixedKeyIndex Garbling.EncIndex) Result budget →
+        State → Assignment → PMF ((Result × List Query) × Assignment)
+  | _, .pure distribution, state, assign =>
+      distribution.map fun value => ((value, state.log), assign)
+  | _, .query request next, state, assign =>
+      (lazyAnswer index state.view request assign).bind fun pair =>
+        lazyRun index (next pair.1) { state with log := request :: state.log } pair.2
+  | _, .sample distribution next, state, assign =>
+      distribution.bind fun value => lazyRun index (next value) state assign
+
+/-! ### The eager-to-lazy equivalence -/
+
+/-- One query step: the eager answer read off a uniform compatible permutation and the lazy
+answer drawn from the assignment continue into the same law. -/
+theorem lazy_query_step {Outcome : Type} (index : FixedKeyIndex) (request : Query)
+    (state : State) (assign : Assignment) (injective : AssignmentInjective assign)
+    (eager : (answer : request.Answer) → Equiv Block Block → PMF Outcome)
+    (lazy : (answer : request.Answer) → Assignment → PMF Outcome)
+    (step : ∀ (answer : request.Answer) (other : Assignment), AssignmentInjective other →
+      ((compatibleLaw other).bind fun permutation => eager answer permutation) =
+        lazy answer other) :
+    ((compatibleLaw assign).bind fun permutation =>
+        eager (publicAnswer (setPermutation state index permutation).view request) permutation) =
+      (lazyAnswer index state.view request assign).bind fun pair => lazy pair.1 pair.2 := by
+  cases request with
+  | fixedForward queryIndex domain =>
+    by_cases tracked : queryIndex = index
+    · subst tracked
+      cases pinned : assign domain with
+      | some value =>
+        have lazyEq : lazyAnswer queryIndex state.view
+            (PublicQuery.fixedForward queryIndex domain) assign = PMF.pure (value, assign) := by
+          simp [lazyAnswer, pinned]
+          rfl
+        calc ((compatibleLaw assign).bind fun permutation =>
+              eager (publicAnswer (setPermutation state queryIndex permutation).view
+                (PublicQuery.fixedForward queryIndex domain)) permutation)
+            = (compatibleLaw assign).bind (fun permutation => eager value permutation) := by
+              refine bind_congr_support fun permutation member => ?_
+              rw [publicAnswer_setPermutation_forward,
+                compatibleLaw_support assign injective member domain value pinned]
+          _ = lazy value assign := step value assign injective
+          _ = (lazyAnswer queryIndex state.view (PublicQuery.fixedForward queryIndex domain)
+                assign).bind fun pair => lazy pair.1 pair.2 := by
+              rw [lazyEq]
+              exact (PMF.pure_bind (value, assign) fun pair => lazy pair.1 pair.2).symm
+      | none =>
+        have lazyEq : lazyAnswer queryIndex state.view
+            (PublicQuery.fixedForward queryIndex domain) assign =
+            (freshValueLaw assign).map fun value =>
+              (value, Function.update assign domain (some value)) := by
+          simp [lazyAnswer, pinned]
+          rfl
+        calc ((compatibleLaw assign).bind fun permutation =>
+              eager (publicAnswer (setPermutation state queryIndex permutation).view
+                (PublicQuery.fixedForward queryIndex domain)) permutation)
+            = (compatibleLaw assign).bind (fun permutation =>
+                eager (permutation domain) permutation) := by
+              refine congrArg (PMF.bind _) (funext fun permutation => ?_)
+              rw [publicAnswer_setPermutation_forward]
+          _ = (freshValueLaw assign).bind (fun value =>
+                (compatibleLaw (Function.update assign domain (some value))).bind
+                  fun permutation => eager value permutation) :=
+              compatibleLaw_forward assign injective domain pinned eager
+          _ = (freshValueLaw assign).bind (fun value =>
+                lazy value (Function.update assign domain (some value))) := by
+              refine bind_congr_support fun value member => ?_
+              exact step value (Function.update assign domain (some value))
+                (update_injective assign injective domain value
+                  (freshValueLaw_support assign
+                    (unused_nonempty assign injective domain pinned) member))
+          _ = (lazyAnswer queryIndex state.view (PublicQuery.fixedForward queryIndex domain)
+                assign).bind fun pair => lazy pair.1 pair.2 := by
+              rw [lazyEq]
+              exact (bind_of_map (freshValueLaw assign)
+                (fun value => (value, Function.update assign domain (some value)))
+                fun pair => lazy pair.1 pair.2).symm
+    · have lazyEq : lazyAnswer index state.view (PublicQuery.fixedForward queryIndex domain)
+          assign =
+          PMF.pure (publicAnswer state.view (PublicQuery.fixedForward queryIndex domain),
+            assign) := by
+        simp only [lazyAnswer, if_neg tracked]
+        rfl
+      calc ((compatibleLaw assign).bind fun permutation =>
+            eager (publicAnswer (setPermutation state index permutation).view
+              (PublicQuery.fixedForward queryIndex domain)) permutation)
+          = (compatibleLaw assign).bind (fun permutation =>
+              eager (publicAnswer state.view (PublicQuery.fixedForward queryIndex domain))
+                permutation) := by
+            refine congrArg (PMF.bind _) (funext fun permutation => ?_)
+            rw [publicAnswer_setPermutation_forward_of_ne _ _ _ _ _ tracked]
+        _ = lazy (publicAnswer state.view (PublicQuery.fixedForward queryIndex domain)) assign :=
+            step (publicAnswer state.view (PublicQuery.fixedForward queryIndex domain)) assign
+              injective
+        _ = (lazyAnswer index state.view (PublicQuery.fixedForward queryIndex domain) assign).bind
+              fun pair => lazy pair.1 pair.2 := by
+            rw [lazyEq]
+            exact (PMF.pure_bind
+              (publicAnswer state.view (PublicQuery.fixedForward queryIndex domain), assign)
+              fun pair => lazy pair.1 pair.2).symm
+  | fixedInverse queryIndex range =>
+    by_cases tracked : queryIndex = index
+    · subst tracked
+      cases transposed : pinnedInput assign range with
+      | some domain =>
+        have pin := (pinnedInput_eq_some_iff assign injective range domain).mp transposed
+        have lazyEq : lazyAnswer queryIndex state.view
+            (PublicQuery.fixedInverse queryIndex range) assign = PMF.pure (domain, assign) := by
+          simp [lazyAnswer, transposed]
+          rfl
+        calc ((compatibleLaw assign).bind fun permutation =>
+              eager (publicAnswer (setPermutation state queryIndex permutation).view
+                (PublicQuery.fixedInverse queryIndex range)) permutation)
+            = (compatibleLaw assign).bind (fun permutation => eager domain permutation) := by
+              refine bind_congr_support fun permutation member => ?_
+              rw [publicAnswer_setPermutation_inverse,
+                ← compatibleLaw_support assign injective member domain range pin,
+                Equiv.symm_apply_apply]
+          _ = lazy domain assign := step domain assign injective
+          _ = (lazyAnswer queryIndex state.view (PublicQuery.fixedInverse queryIndex range)
+                assign).bind fun pair => lazy pair.1 pair.2 := by
+              rw [lazyEq]
+              exact (PMF.pure_bind (domain, assign) fun pair => lazy pair.1 pair.2).symm
+      | none =>
+        have fresh := notMem_pinnedRange_of_pinnedInput_eq_none assign injective transposed
+        have lazyEq : lazyAnswer queryIndex state.view
+            (PublicQuery.fixedInverse queryIndex range) assign =
+            (freshInputLaw assign).map fun domain =>
+              (domain, Function.update assign domain (some range)) := by
+          simp [lazyAnswer, transposed]
+          rfl
+        calc ((compatibleLaw assign).bind fun permutation =>
+              eager (publicAnswer (setPermutation state queryIndex permutation).view
+                (PublicQuery.fixedInverse queryIndex range)) permutation)
+            = (compatibleLaw assign).bind (fun permutation =>
+                eager (permutation.symm range) permutation) := by
+              refine congrArg (PMF.bind _) (funext fun permutation => ?_)
+              rw [publicAnswer_setPermutation_inverse]
+          _ = (freshInputLaw assign).bind (fun domain =>
+                (compatibleLaw (Function.update assign domain (some range))).bind
+                  fun permutation => eager domain permutation) :=
+              compatibleLaw_inverse assign injective range fresh eager
+          _ = (freshInputLaw assign).bind (fun domain =>
+                lazy domain (Function.update assign domain (some range))) := by
+              refine congrArg (PMF.bind _) (funext fun domain => ?_)
+              exact step domain (Function.update assign domain (some range))
+                (update_injective assign injective domain range fresh)
+          _ = (lazyAnswer queryIndex state.view (PublicQuery.fixedInverse queryIndex range)
+                assign).bind fun pair => lazy pair.1 pair.2 := by
+              rw [lazyEq]
+              exact (bind_of_map (freshInputLaw assign)
+                (fun domain => (domain, Function.update assign domain (some range)))
+                fun pair => lazy pair.1 pair.2).symm
+    · have lazyEq : lazyAnswer index state.view (PublicQuery.fixedInverse queryIndex range)
+          assign =
+          PMF.pure (publicAnswer state.view (PublicQuery.fixedInverse queryIndex range),
+            assign) := by
+        simp only [lazyAnswer, if_neg tracked]
+        rfl
+      calc ((compatibleLaw assign).bind fun permutation =>
+            eager (publicAnswer (setPermutation state index permutation).view
+              (PublicQuery.fixedInverse queryIndex range)) permutation)
+          = (compatibleLaw assign).bind (fun permutation =>
+              eager (publicAnswer state.view (PublicQuery.fixedInverse queryIndex range))
+                permutation) := by
+            refine congrArg (PMF.bind _) (funext fun permutation => ?_)
+            rw [publicAnswer_setPermutation_inverse_of_ne _ _ _ _ _ tracked]
+        _ = lazy (publicAnswer state.view (PublicQuery.fixedInverse queryIndex range)) assign :=
+            step (publicAnswer state.view (PublicQuery.fixedInverse queryIndex range)) assign
+              injective
+        _ = (lazyAnswer index state.view (PublicQuery.fixedInverse queryIndex range) assign).bind
+              fun pair => lazy pair.1 pair.2 := by
+            rw [lazyEq]
+            exact (PMF.pure_bind
+              (publicAnswer state.view (PublicQuery.fixedInverse queryIndex range), assign)
+              fun pair => lazy pair.1 pair.2).symm
+  | encForward queryIndex domain =>
+    calc ((compatibleLaw assign).bind fun permutation =>
+          eager (publicAnswer (setPermutation state index permutation).view
+            (PublicQuery.encForward queryIndex domain)) permutation)
+        = lazy (publicAnswer state.view (PublicQuery.encForward queryIndex domain)) assign :=
+          step (publicAnswer state.view (PublicQuery.encForward queryIndex domain)) assign
+            injective
+      _ = (lazyAnswer index state.view (PublicQuery.encForward queryIndex domain) assign).bind
+            fun pair => lazy pair.1 pair.2 :=
+          (PMF.pure_bind
+            (publicAnswer state.view (PublicQuery.encForward queryIndex domain), assign)
+            fun pair => lazy pair.1 pair.2).symm
+  | encInverse queryIndex range =>
+    calc ((compatibleLaw assign).bind fun permutation =>
+          eager (publicAnswer (setPermutation state index permutation).view
+            (PublicQuery.encInverse queryIndex range)) permutation)
+        = lazy (publicAnswer state.view (PublicQuery.encInverse queryIndex range)) assign :=
+          step (publicAnswer state.view (PublicQuery.encInverse queryIndex range)) assign
+            injective
+      _ = (lazyAnswer index state.view (PublicQuery.encInverse queryIndex range) assign).bind
+            fun pair => lazy pair.1 pair.2 :=
+          (PMF.pure_bind
+            (publicAnswer state.view (PublicQuery.encInverse queryIndex range), assign)
+            fun pair => lazy pair.1 pair.2).symm
+  | hash point =>
+    calc ((compatibleLaw assign).bind fun permutation =>
+          eager (publicAnswer (setPermutation state index permutation).view
+            (PublicQuery.hash point)) permutation)
+        = lazy (publicAnswer state.view (PublicQuery.hash point)) assign :=
+          step (publicAnswer state.view (PublicQuery.hash point)) assign injective
+      _ = (lazyAnswer index state.view (PublicQuery.hash point) assign).bind
+            fun pair => lazy pair.1 pair.2 :=
+          (PMF.pure_bind (publicAnswer state.view (PublicQuery.hash point), assign)
+            fun pair => lazy pair.1 pair.2).symm
+
+
+
+/-- The eager model and the lazy model give the same law of the result, the log and the tracked
+permutation: sampling the whole permutation before the run is the same as sampling only its
+transcript during the run and the permutation afterwards, conditioned on that transcript. -/
+theorem compatibleLaw_run {Result : Type} {budget : Nat} (index : FixedKeyIndex)
+    (program : OracleProgram (publicOracleSpec FixedKeyIndex Garbling.EncIndex) Result budget) :
+    ∀ (state : State) (assign : Assignment), AssignmentInjective assign →
+      ((compatibleLaw assign).bind fun permutation =>
+          (program.run idealOracle (setPermutation state index permutation)).map fun output =>
+            ((output.1, output.2.log), permutation)) =
+        (lazyRun index program state assign).bind fun output =>
+          (compatibleLaw output.2).map fun permutation => (output.1, permutation) := by
+  induction program with
+  | pure distribution =>
+    intro state assign injective
+    have lhs : ((compatibleLaw assign).bind fun permutation =>
+          ((OracleProgram.pure (oracle := publicOracleSpec FixedKeyIndex Garbling.EncIndex)
+              (budget := budget) distribution).run idealOracle
+              (setPermutation state index permutation)).map
+            fun output => ((output.1, output.2.log), permutation)) =
+        (compatibleLaw assign).bind fun permutation =>
+          distribution.bind fun value => PMF.pure ((value, state.log), permutation) := by
+      refine congrArg (PMF.bind _) (funext fun permutation => ?_)
+      rw [OracleProgram.run_pure, PMF.map, PMF.map, PMF.bind_bind]
+      exact congrArg (PMF.bind _) (funext fun value => PMF.pure_bind _ _)
+    have rhs : ((lazyRun index (OracleProgram.pure (budget := budget) distribution) state
+          assign).bind fun output =>
+            (compatibleLaw output.2).map fun permutation => (output.1, permutation)) =
+        distribution.bind fun value => (compatibleLaw assign).bind fun permutation =>
+          PMF.pure ((value, state.log), permutation) := by
+      show ((distribution.map fun value => ((value, state.log), assign)).bind fun output =>
+        (compatibleLaw output.2).map fun permutation => (output.1, permutation)) = _
+      rw [bind_of_map]
+      exact congrArg (PMF.bind _) (funext fun value => rfl)
+    exact lhs.trans ((PMF.bind_comm _ _ _).trans rhs.symm)
+  | query request next inductionHypothesis =>
+    intro state assign injective
+    have lhs : ((compatibleLaw assign).bind fun permutation =>
+          ((OracleProgram.query request next).run idealOracle
+            (setPermutation state index permutation)).map fun output =>
+              ((output.1, output.2.log), permutation)) =
+        (compatibleLaw assign).bind fun permutation =>
+          ((next (publicAnswer (setPermutation state index permutation).view request)).run
+              idealOracle
+              (setPermutation { state with log := request :: state.log } index permutation)).map
+            fun output => ((output.1, output.2.log), permutation) := by
+      refine congrArg (PMF.bind _) (funext fun permutation => ?_)
+      rw [OracleProgram.run_query]
+      rfl
+    have rhs : ((lazyRun index (OracleProgram.query request next) state assign).bind fun output =>
+          (compatibleLaw output.2).map fun permutation => (output.1, permutation)) =
+        (lazyAnswer index state.view request assign).bind fun pair =>
+          (lazyRun index (next pair.1) { state with log := request :: state.log } pair.2).bind
+            fun output => (compatibleLaw output.2).map fun permutation =>
+              (output.1, permutation) :=
+      PMF.bind_bind _ _ _
+    refine lhs.trans (Eq.trans ?_ rhs.symm)
+    exact lazy_query_step index request state assign injective
+      (fun answer permutation => ((next answer).run idealOracle
+        (setPermutation { state with log := request :: state.log } index permutation)).map
+          fun output => ((output.1, output.2.log), permutation))
+      (fun answer other => (lazyRun index (next answer)
+        { state with log := request :: state.log } other).bind fun output =>
+          (compatibleLaw output.2).map fun permutation => (output.1, permutation))
+      fun answer other injectiveOther =>
+        inductionHypothesis answer { state with log := request :: state.log } other injectiveOther
+  | sample distribution next inductionHypothesis =>
+    intro state assign injective
+    have lhs : ((compatibleLaw assign).bind fun permutation =>
+          ((OracleProgram.sample distribution next).run idealOracle
+            (setPermutation state index permutation)).map fun output =>
+              ((output.1, output.2.log), permutation)) =
+        (compatibleLaw assign).bind fun permutation => distribution.bind fun value =>
+          ((next value).run idealOracle (setPermutation state index permutation)).map
+            fun output => ((output.1, output.2.log), permutation) := by
+      refine congrArg (PMF.bind _) (funext fun permutation => ?_)
+      rw [OracleProgram.run_sample, PMF.map_bind]
+    have rhs : ((lazyRun index (OracleProgram.sample distribution next) state assign).bind
+          fun output =>
+            (compatibleLaw output.2).map fun permutation => (output.1, permutation)) =
+        distribution.bind fun value => (lazyRun index (next value) state assign).bind
+          fun output => (compatibleLaw output.2).map fun permutation =>
+            (output.1, permutation) :=
+      PMF.bind_bind _ _ _
+    refine lhs.trans (Eq.trans ((PMF.bind_comm _ _ _).trans ?_) rhs.symm)
+    exact congrArg (PMF.bind _)
+      (funext fun value => inductionHypothesis value state assign injective)
 
 end
 
