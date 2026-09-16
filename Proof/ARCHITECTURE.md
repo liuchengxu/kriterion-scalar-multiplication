@@ -1,10 +1,11 @@
 # Proof architecture for `hybridGame_close_to_idealGame`
 
-Status of the tree (after slice 3k): every obligation is proved except the single `sorry` at
+Status of the tree (after slice 3l): every obligation is proved except the single `sorry` at
 `Proof/Privacy.lean`, theorem `hybridGame_close_to_idealGame` (statement must stay
-byte-identical). Both sides of the chain reach a reference game; only step 7 -- the
-steering identification -- and the final assembly are open, and step 7 must be
-**re-scheduled** (see "Corrections from slice 3k"). This document is the plan for closing it, the pieces that are already
+byte-identical). Both sides of the chain reach a reference game, **the final assembly is
+machine-checked** (`workPerAdvantage_of_steering`, `Proof/Assembly.lean`), and the only
+remaining input is the steering hop -- step 7 -- as a single named inequality between two
+explicit games. This document is the plan for closing it, the pieces that are already
 machine-checked, and the constant it produces. The next slice must inherit it rather than
 re-derive it.
 
@@ -238,6 +239,10 @@ direction at those indices, `K = 3` for that hop, which is no better). Crude tot
 `advantage ≤ 10q/2^128 + ε₀`, i.e. **K ≤ 10** (`K = 4` was an undercount), with
 `ε₀ ≤ 2·1270·2^-131 + 3/p < 2^-119`. `workPerAdvantage_of_le` (proved) closes the obligation
 from `K ≤ 2^28` and `ε₀ ≤ 2^-101`; the margin to the wall is `2^24`.
+
+**Superseded in slice 3l: `K` is `16`, not `10`.** Step 7's bad points do not live on a
+deferrable label, so its charge is `8 q / 2^128`, not `2 q / 2^128`. See `chainPerQuery` in
+`Proof/Chain.lean` and "Corrections from slice 3l". `ε₀ = chainOneTime` did not move.
 
 The stage-1 half of each bad bound is `firstStage_hidden_le` (`Proof/Hidden.lean`): for any game
 that samples the label key up front and whose first stage runs on data independent of the key,
@@ -562,7 +567,123 @@ instead of the whole key; `uniform_bind_setKeyLabel` / `uniform_keyLabel_mem` ar
 * **No constant moved, and no statement was weakened.** `Proof/Chain.lean` and
   `Proof/Privacy.lean` are byte-identical to slice 3j.
 
-**What P10 still has to do.** The whole `H` side is done: steps 1 and 3 (slice 3h,
+**Corrections from slice 3l — READ THIS WITH THE SLICE-3K BLOCK.**
+
+* **`K` is now `16`, as `chainPerQuery` in `Proof/Chain.lean`, and the derivation is in
+  that declaration's doc-comment.** Eight hops on the two machine-checked sides supply
+  `8 q / 2 ^ 128` (`4 q / 2 ^ 128` each from `advantage_hybridGame_referenceGame_le` and
+  `advantage_simulatedGame_steeredReferenceGame_le`); the steering hop is charged
+  `8 q / 2 ^ 128` (four bad points, two per query direction, at `2 / 2 ^ 128` each). The
+  `2 / 2 ^ 128` per point covers both `1 / (2 ^ 128 - q)` for `q < 2 ^ 127` and the
+  hash-fiber chunk; for `q ≥ 2 ^ 127` the whole bound exceeds one and is free. `16` has
+  slack over the honest figure (about `12.2`) on purpose: `workPerAdvantage_of_le` proves
+  the tail for any `perQuery ≤ 2 ^ 28`, so the margin to the wall is still `2 ^ 24` and
+  nothing in the chain depends on the value. `chainOneTime`, `chainOneTime_lt` and
+  `chainOneTime_le` were **not** touched: the one-time terms do not depend on `K`, and the
+  `6 / 2 ^ 128` freshness term is kept even though `uniform_programmed_retarget` makes it
+  slack on the `retarget` route.
+* **The obligation statement is byte-unchanged.** `Proof/Privacy.lean` was not modified at
+  all this slice; `realGame_eq_hybridGame`, `hybridGame_close_to_idealGame` and
+  `adaptivePrivacy` are byte-identical to `ab07aa8`, and the single `sorry` is still the
+  original one at `hybridGame_close_to_idealGame`.
+* **The assembly is done, and it is now the *only* thing that was left besides step 7.**
+  `Proof/Assembly.lean` proves `workPerAdvantage_of_steering`: from the single hypothesis
+
+  ```lean
+  advantage (referenceGame (hybridBridge scalar) adversary parameter auxiliary)
+    ((PMF.uniformOfFintype NonZeroBase).bind fun bridgeKey =>
+      steeredReferenceGame (fun _ => bridgeKey.value) scalar adversary parameter auxiliary)
+    ≤ steeringStep adversary parameter
+  ```
+
+  (`steeringStep = 8 q / 2 ^ 128 + 6 / 2 ^ 128`) it derives exactly the goal of
+  `hybridGame_close_to_idealGame`, `sorryAx`-free. `chain_shares_eq` proves that the three
+  shares sum to `chainPerQuery * q / 2 ^ 128 + chainOneTime` **as an equality**, so the
+  accounting is machine-checked end to end and `chainPerQuery = 16` is validated. The hop
+  was deliberately left as a *hypothesis* rather than a second `sorry`: the tree still has
+  exactly one `sorry`, in its original place, and the residual obligation is one crisp
+  inequality between two named games rather than a bare goal.
+* **Slice 3k's fixed-target chunk-mass figure (`≈ 1.11 / 2 ^ 128`) is NOT provable by the
+  counting argument it cites, and the chain does not need it.** A fiber is the arithmetic
+  progression `target + k p` inside `2 ^ 384`. For the *low* chunk the members with a
+  prescribed chunk value form a residue class of `k` modulo `2 ^ 128` and for the *high*
+  chunk they form an interval in `k`, so both are countable by hand; but for the **middle**
+  chunk the condition is `(target + k p) mod 2 ^ 256 ∈ I` with `|I| = 2 ^ 128`, and bounding
+  the number of hits is an equidistribution statement about `p` modulo `2 ^ 256` (a
+  three-distance / continued-fraction argument, with denominators up to `2 ^ 128`). The
+  count is about `5.4` on average but nothing short of that analysis bounds the maximum.
+  **The chain never needs a fixed target.** The steering gate's fiber target is that gate's
+  own selected output `o x7 0`, which is the hidden part of the two-stage game: conditionally
+  on the released table it is uniform (off the curve because the visible law is uniform, on
+  the curve because `offsetTerm` has coefficient exactly one in it). So the law to bound is
+  the **marginal** one -- a uniform field element and then a uniform sample of its fiber --
+  and `hashFiber_total_difference` already puts that within `p / 2 ^ 384` of the uniform
+  384-bit law. `Proof/Chunk.lean` finishes it: a digest is its three chunks
+  (`digestChunkEquiv`), so a uniform digest has an exactly uniform chunk
+  (`map_uniformDigest_chunk`), and hence **`fiberChunk_mass_le`**: every point mass of a
+  128-bit chunk of a marginal hash-fiber sample is at most `1 / 2 ^ 128 + p / 2 ^ 384 ≤
+  2 / 2 ^ 128`. That is the `2 / 2 ^ 128` the `chainPerQuery` derivation charges.
+* **Three of the four bad points are cheap; the fourth (`y = π ℓ`) is the whole of the
+  remaining work, and it needs lazy sampling.** With `ℓ` the selected label, `c_f` and `c_s`
+  the two fiber chunks and `f = c_f ^^^ ℓ`, `s = c_s ^^^ ℓ`:
+  * `π x = f` and `y = f` are conditions `c_f = π x ^^^ ℓ` and `c_f = y ^^^ ℓ`: one point
+    each in `c_f`. Game `R(c/s)` -- the reference side of the hop -- **never mentions `f`**,
+    so charging the bad mass on that side (which `advantage_bind_le_jointBad` permits) makes
+    `c_f` a value the run does not read, and `hidden_label_bound` plus `fiberChunk_mass_le`
+    bound them at `2 / 2 ^ 128` per log entry.
+  * `π x = s` is one point in `c_s`, but **both** games program their stage-2 view with `s`,
+    so neither side gets it for free; it still has to be charged against the conditional law.
+  * `y = π ℓ` (the erased image) involves neither chunk. For **stage-1** log entries it is
+    one point in `ℓ` (`ℓ = π⁻¹ y`) and `firstStage_hidden_le` already bounds it, because
+    stage 1 never reads the key. For **stage-2** entries the adversary has been handed `ℓ`,
+    and the honest bound is that `π ℓ` is uniform over the at least `2 ^ 128 - q` values the
+    transcript has not pinned. That is a lazy-sampling statement and the tree has no route
+    to it.
+* **Every eager reparametrisation of `π` is circular, and this is now checked for
+  `uniform_programmed_erased` too.** Slice 3k ruled out `retarget`/`swapRanges`. The same
+  obstruction kills the `uniform_programmed_erased` route, which otherwise looks decisive:
+  writing `ρ = π ℓ` and `π = programmed (programmed π ℓ f) ℓ ρ` turns the steered game into
+  "stage 1 on `programmed π' ℓ ρ`, stage 2 on `programmed π' ℓ s`" with `ρ` a **free uniform
+  block**, and the reference game into "stage 1 on `programmed (programmed π' ℓ s) ℓ ρ`,
+  stage 2 on `programmed π' ℓ s`" -- two games differing **in stage 1 only**, which is
+  exactly what §4 promised and what `firstStage_hidden_le` is built for. It cannot be used:
+  `uniform_programmed_erased` takes its `label` and `range` as parameters *outside* the
+  continuation, and `ℓ`, `f` and `s` are functions of the adaptively chosen input and of the
+  stage-2 fiber samples. The bijection would have to be chosen before the first stage runs.
+  **Do not re-attempt this either.** Conditioning on the transcript first is the only escape,
+  and that is the lazy-sampling theorem.
+* **What the lazy-sampling theorem has to say.** The eager model runs
+  `program.run idealOracle` on a state holding a concrete `PermutationOracle FixedKeyIndex
+  Block`. The lazy model carries a partial injective assignment per index and answers a
+  fresh query by a uniform choice from the unused values. The theorem is that the two laws
+  of `(result, log)` agree; its induction step is exactly
+  `Cryptography.Permutation.programCompatiblePermutation_uniform` together with
+  `compatiblePermutation_mass` / `injectiveAssignment_mass`. With it, `π ℓ` conditioned on a
+  transcript of `q` entries is uniform over at least `2 ^ 128 - q` values, which is the
+  missing `1 / (2 ^ 128 - q)`. Nothing under `Proof/` does this today, and it is the whole
+  of the remaining work -- slice 3l did **not** build it, and its size was underestimated:
+  it is a self-contained development (a lazy oracle, its state invariant, the run-level
+  induction, and the bridge back to `idealOracle`), not a corollary of the counting core.
+
+**What P10 still has to do (as of slice 3l).** Exactly one thing: the hypothesis of
+`workPerAdvantage_of_steering` (`Proof/Assembly.lean`). Everything else in the chain,
+including the final assembly and the arithmetic, is machine-checked. The hop splits into
+
+(a) the **visible-law half**, ready since slice 3k: apply `twoStageGame_congr_support` to
+`referenceRound_eq_twoStageGame` and `steeredReferenceRound_eq_twoStageGame`, discharging
+the joint law by `map_releasedPair_offCurve` off the curve and `map_releasedPair_onCurve`
+on it (hidden part on the steered side `shiftSteering δ` of the selected outputs), and the
+second stages by `steeredReleasedStageTwo_offCurve` off the curve and by
+`steer_programSelected` + `uniformHashFibers_setSteering` + `steerTo_eq_map` +
+`programAll_steerRequests` on it; and
+
+(b) the **oracle half**, which reduces the double programming of the steering gate to the
+reference game's single programming. Three of its four bad points are now priced
+(`fiberChunk_mass_le`); the fourth needs the lazy-sampling theorem described under
+"Corrections from slice 3l". Build that theorem first; without it the hop cannot be closed
+honestly, and every eager reparametrisation has been checked and ruled out.
+
+**The historical plan below is kept for context.** The whole `H` side is done: steps 1 and 3 (slice 3h,
 `Proof/HybridChain.lean`) and step 2 plus the identification with `R(c/s)` (slice 3i,
 `Proof/HybridReference.lean`). The whole `S` side up to the steering is done: steps 4, 5 and
 6 (slice 3j, `Proof/SimulatedChain.lean`) and the `S` side's own step 2 plus the
@@ -592,9 +713,11 @@ try to move the hop between steps 4 and 5: both are analysed and ruled out above
 reaches the middle game `R(c/s)` from the other end, so one `advantageSymm` orientation step
 is needed) and close with `workPerAdvantage_of_chain`.
 
-**The constant assignment (slice 3h, updated slices 3i and 3j).** The budget is
-`10·(q₁+q₂)/2^128 + chainOneTime`, `chainOneTime = sideOneTime + sideOneTime + 6/2^128`,
-`sideOneTime = 2/p + 1270·(p/2^384)`. **No constant moved in slice 3i or slice 3j.**
+**The constant assignment (slice 3h, updated slices 3i, 3j and 3l).** The budget is
+`chainPerQuery·(q₁+q₂)/2^128 + chainOneTime` with `chainPerQuery = 16`,
+`chainOneTime = sideOneTime + sideOneTime + 6/2^128`,
+`sideOneTime = 2/p + 1270·(p/2^384)`. **No one-time constant moved in slice 3i, 3j or 3l;
+slice 3l raised only the per-query constant, from `10` to `16`.**
 
 | step | which side | per-query | one-time | status |
 |---|---|---|---|---|
@@ -612,7 +735,8 @@ is needed) and close with `workPerAdvantage_of_chain`.
 | 2 twin (1270 digests → field + fiber) | S | 0 | `1270·p/2^384` | **done** (`advantage_steeredMaskedGame_steeredFiberedDigestGame_le`) |
 | 2 twin (fiber sample → selected outputs) | S | 0 | 0 | **done** (`steeredFiberedDigestGame_eq_steeredFiberGame`) |
 | 2 twin (identify with `R(u)` + steering) | S | 0 | 0 | **done** (`steeredFiberGame_eq_steeredReferenceGame`) |
-| 7 (steering removal and the visible-law identification) | S | `2q/2^128` budgeted; the honest charge is larger (see slice 3k) | `6/2^128` budgeted | open (slice 3k built the glue, the visible joint laws, the off-curve half and the reparametrisation tool; the oracle half needs a random-permutation bound and a `K` decision) |
+| 7 (steering removal and the visible-law identification) | S | `8q/2^128` (`steeringStep`) | `6/2^128` | open (slice 3k built the glue, the visible joint laws, the off-curve half and the reparametrisation tool; slice 3l priced the chunk points and proved the assembly around the hop; the oracle half still needs the lazy-sampling theorem) |
+| assembly (triangle + `workPerAdvantage_of_chain`) | — | 0 | 0 | **done** (`workPerAdvantage_of_steering`, `chain_shares_eq`) |
 
 Slice 3h consumed `4·(q₁+q₂)/2^128` of the per-query budget and none of the one-time budget.
 **Slice 3i consumed exactly one `sideOneTime`** of the one-time budget and none of the
@@ -620,14 +744,16 @@ per-query budget. Together the `H` side costs `4·(q₁+q₂)/2^128 + sideOneTim
 (`advantage_hybridGame_referenceGame_le`). **Slice 3j consumed `4·(q₁+q₂)/2^128` of the
 per-query budget and the second `sideOneTime`, and nothing else**
 (`advantage_simulatedGame_steeredReferenceGame_le`). What is left for step 7 is exactly
-`2·(q₁+q₂)/2^128 + 6/2^128`, and the three shares sum to exactly
-`10·(q₁+q₂)/2^128 + chainOneTime`. No constant moved in slice 3j; `Proof/Chain.lean` was not
-modified.
+`steeringStep = 8·(q₁+q₂)/2^128 + 6/2^128`, and `chain_shares_eq` proves that the three
+shares sum to exactly `16·(q₁+q₂)/2^128 + chainOneTime`. Slice 3l moved only
+`chainPerQuery`; `chainOneTime` and `Proof/Privacy.lean` were not modified.
 
-Two things the slice-3b analysis had that this chain does **not** need: hiding all 1270
-unselected-label values by an explicit shift (absorbed by `P4`), and the `(2^128 − q)`
-denominators (the `R`-side bounds sample the hidden label fresh, so each log entry hits with
-probability exactly `k/2^128`).
+One thing the slice-3b analysis had that this chain does **not** need: hiding all 1270
+unselected-label values by an explicit shift (absorbed by `P4`). Its `(2^128 − q)`
+denominators, on the other hand, **are** needed — by step 7 and only by step 7. Every other
+hop samples the hidden label fresh and hits with probability exactly `k/2^128`; step 7's
+erased image `π ℓ` is a function of the permutation and has no such bound (slice 3k §3,
+slice 3l).
 
 ## 5. Lemma list, dependencies, status
 
@@ -643,7 +769,7 @@ probability exactly `k/2^128`).
 | P8 | arithmetic tail `ε ≤ K q/2^128 + ε₀`, `K ≤ 2^28`, `ε₀ ≤ 2^-101` ⇒ `WorkPerAdvantage 100 (q+1) ε`; `advantage ≤ 1` | `Proof/Reference.lean`: `workPerAdvantage_of_le`, `advantage_le_one` | **done** |
 | P9a | `R(b)` as a `PMF Bool`: `programIndices` (unconditional partial programming), `gateKey`/`selectedLabel`/`slotRange`/`tableRow`, `selectedPrograms`, `HashFibers`/`uniformHashFibers`, `programSelected`, `referenceStage2`, `referenceGame`; `run_idealOracle_support` (a run changes only the log); `selectedPrograms_hash`/`_pad`/`_label` | `Proof/ReferenceGame.lean` | **done** |
 | P9b | unfold `idealGame` for `hybridSimulator` and `simulator` into the shape of §4, marginalize unused tape fields, and discharge the `unread` hypothesis of `secondStage_hidden_le` for every second stage: the labels one input leaves unselected (`unreadLabelBits`) are read by no game, because `encodeAffine`, `selectedLabel` and `selectedPrograms` read only the selected label, the reference table ignores the key entirely, and an ideal-oracle run reads only the view and the log | `Proof/GameShape.lean`: `inputLabelBits`, `unreadLabelBits`, `keyLabel_setKeyLabels_of_ne`, `selectedLabel_setKeyLabels`, `encodeAffine_setKeyLabels`, `Coordinates.table_key`, `firstStage_key_congr`, `map_fst_run_congr`, `programAll_view_congr`, `steerRequestLaw`, `steer_eq_map`, `steer_visible_congr`, `stageTwoState`, `decisionLaw`, `bind_decisionLaw`, `hybridStageTwo`/`_unread`, `referenceStageTwo`/`_unread`, `simulatedStageTwo`/`_unread`, `setCurve`, `uniform_bind_setCurve`, `setOracle`, `uniform_bind_setOracle`, `simulatedGame_eq`; `Proof/Privacy.lean`: `hybridGame_eq` | **done** |
-| P10 | assemble §4 with `advantageTriangle` / `event_difference_le` and P8 | assembly layer `Proof/Chain.lean`: `advantage_bind_le_bad`, `advantage_bind_le_jointBad`, `advantage_bind_le_totalDifference`, `advantage_bind_le_of_le`, `advantage_trans`, `sideOneTime`, `chainOneTime`, `chainOneTime_lt`, `workPerAdvantage_of_chain`; first hop's algebra `Proof/Reparametrise.lean`: `usedLabel`, `programFamily_apply`, `freshDigest`/`freshPad`/`freshHash`, `curveGarble_programFamily`, `freshEquiv`, `uniform_map_freshEquiv`; `H`-side steps 1 and 3 `Proof/HybridChain.lean`: `setKey`/`uniform_bind_setKey`, `hybridTwoStage`, `hybridOn`, `hybridGame_eq_hybridOn`, `hybridGame_eq_split`, `freshValue`, `usedPrograms`, `programFamily_eq_programIndices`, `uniform_bind_usedPrograms`, `hybridFresh`, `hybridGame_eq_fresh`, `queryLabelIndex`, `usedHidden`, `UsedBad`, `usedLabel_eq_keyLabel`, `publicAnswer_usedPrograms`, `bind_pairLaw`, `advantage_firstView_le`, `publicAnswer_permutation_congr`, `programIndices_congr_at`, `digestedRaw`, `selectedPrograms_selected`/`_unselected`, `unreadQueryIndex`, `SelectedBad`, `publicAnswer_selectedPrograms`, `selectedStageTwo`/`_unread`/`_length`, `usedStageTwo`/`_agree`, `bind_stageLaw`, `secondBad`, `secondBad_mass_le`, `advantage_secondView_le`, `hybridData`, `digestedReference`, `advantage_hybridGame_digestedReference_le`; `H`-side step 2 and the `R` identification `Proof/HybridReference.lean`: `uniformOfFintype_bind_bijection`, `hybridData_eq_uniform`, `ReferenceDatum` with its projections, `referenceRaw`, `referenceCircuit`, `digestedBody`, `fiberedBody`, `referenceOf`, `hybridCircuit_eq_referenceCircuit`, `digestedGame`, `digestedSampleEquiv`, `digestedReference_eq`, `maskedGame`, `advantage_digestedGame_maskedGame_le`, `fiberedDigestGame`, `advantage_maskedGame_fiberedDigestGame_le`, `digestField_of_mem_uniformHashFibers`, `selectedPrograms_setGate`, `selectedStageTwo_setGate`, `uniformHashFibers_selected`, `fiberGame`, `fiberedDigestGame_eq_fiberGame`, `referenceRound`, `referenceGame_eq`, `referenceGame_eq_split`, `referenceSampleEquiv`, `fiberGame_eq_referenceGame`, `advantage_digestedReference_referenceGame_le`, `advantage_hybridGame_referenceGame_le`; `S`-side steps 4–6 `Proof/SimulatedChain.lean`: `hashBytes_congr`, `padBytes_congr`, `bitEvaluate_congr`, `evaluateDigit_congr`, `curveEvaluate_congr`, `fresh_congr`, `programIfFresh_congr_at`, `programAll_congr_at`, `programAll_untouched`, `publicAnswer_programAll_congr`, `simulateRequestLaw`/`_none`/`_some`/`_support`, `simulateEncode_eq_map`, `simulatedStageTwo_eq`, `steerRequestLaw_support`, `steerRequestLaw_congr`, `simulatedStageTwo_agree`, `usedSimulatedStageTwo`, `selectedSimulatedStageTwo`, `programSelected_stageTwoState`, `selectedSimulatedStageTwo_unread`, `simulatedStageTwo_length`, `programIndices_selected_congr`, `usedSimulatedStageTwo_agree`, `simulatedTwoStage`, `simulatedOn`, `simulatedGame_eq_simulatedOn`, `simulatedGame_eq_split`, `simulatedFresh`, `simulatedGame_eq_fresh`, `SimulatedDatum`, `simulatedData`, `simulatedCircuit`, `simulatedGame_eq_used`, `steeredDigested`, `advantage_simulatedGame_steeredDigested_le`; `S`-side step 2 and the `R(u)` identification `Proof/SimulatedReference.lean`: `steeredDigestedBody`, `steeredFiberedBody`, `simulatedData_eq_uniform`, `simulatedCircuit_eq_referenceCircuit`, `steeredDigestedGame`, `steeredSampleEquiv`, `steeredDigested_eq`, `steeredMaskedGame`, `advantage_steeredDigestedGame_steeredMaskedGame_le`, `steeredFiberedDigestGame`, `advantage_steeredMaskedGame_steeredFiberedDigestGame_le`, `steeredFiberGame`, `steeredFiberedDigestGame_eq_steeredFiberGame`, `steeredReferenceRound`, `steeredReferenceGame`, `steeredFiberGame_eq_steeredReferenceGame`, `advantage_steeredDigested_steeredReferenceGame_le`, `advantage_simulatedGame_steeredReferenceGame_le` | **open** (both sides are done; step 7 and the final assembly are not) |
+| P10 | assemble §4 with `advantageTriangle` / `event_difference_le` and P8 | assembly layer `Proof/Chain.lean`: `advantage_bind_le_bad`, `advantage_bind_le_jointBad`, `advantage_bind_le_totalDifference`, `advantage_bind_le_of_le`, `advantage_trans`, `sideOneTime`, `chainOneTime`, `chainOneTime_lt`, `workPerAdvantage_of_chain`; first hop's algebra `Proof/Reparametrise.lean`: `usedLabel`, `programFamily_apply`, `freshDigest`/`freshPad`/`freshHash`, `curveGarble_programFamily`, `freshEquiv`, `uniform_map_freshEquiv`; `H`-side steps 1 and 3 `Proof/HybridChain.lean`: `setKey`/`uniform_bind_setKey`, `hybridTwoStage`, `hybridOn`, `hybridGame_eq_hybridOn`, `hybridGame_eq_split`, `freshValue`, `usedPrograms`, `programFamily_eq_programIndices`, `uniform_bind_usedPrograms`, `hybridFresh`, `hybridGame_eq_fresh`, `queryLabelIndex`, `usedHidden`, `UsedBad`, `usedLabel_eq_keyLabel`, `publicAnswer_usedPrograms`, `bind_pairLaw`, `advantage_firstView_le`, `publicAnswer_permutation_congr`, `programIndices_congr_at`, `digestedRaw`, `selectedPrograms_selected`/`_unselected`, `unreadQueryIndex`, `SelectedBad`, `publicAnswer_selectedPrograms`, `selectedStageTwo`/`_unread`/`_length`, `usedStageTwo`/`_agree`, `bind_stageLaw`, `secondBad`, `secondBad_mass_le`, `advantage_secondView_le`, `hybridData`, `digestedReference`, `advantage_hybridGame_digestedReference_le`; `H`-side step 2 and the `R` identification `Proof/HybridReference.lean`: `uniformOfFintype_bind_bijection`, `hybridData_eq_uniform`, `ReferenceDatum` with its projections, `referenceRaw`, `referenceCircuit`, `digestedBody`, `fiberedBody`, `referenceOf`, `hybridCircuit_eq_referenceCircuit`, `digestedGame`, `digestedSampleEquiv`, `digestedReference_eq`, `maskedGame`, `advantage_digestedGame_maskedGame_le`, `fiberedDigestGame`, `advantage_maskedGame_fiberedDigestGame_le`, `digestField_of_mem_uniformHashFibers`, `selectedPrograms_setGate`, `selectedStageTwo_setGate`, `uniformHashFibers_selected`, `fiberGame`, `fiberedDigestGame_eq_fiberGame`, `referenceRound`, `referenceGame_eq`, `referenceGame_eq_split`, `referenceSampleEquiv`, `fiberGame_eq_referenceGame`, `advantage_digestedReference_referenceGame_le`, `advantage_hybridGame_referenceGame_le`; `S`-side steps 4–6 `Proof/SimulatedChain.lean`: `hashBytes_congr`, `padBytes_congr`, `bitEvaluate_congr`, `evaluateDigit_congr`, `curveEvaluate_congr`, `fresh_congr`, `programIfFresh_congr_at`, `programAll_congr_at`, `programAll_untouched`, `publicAnswer_programAll_congr`, `simulateRequestLaw`/`_none`/`_some`/`_support`, `simulateEncode_eq_map`, `simulatedStageTwo_eq`, `steerRequestLaw_support`, `steerRequestLaw_congr`, `simulatedStageTwo_agree`, `usedSimulatedStageTwo`, `selectedSimulatedStageTwo`, `programSelected_stageTwoState`, `selectedSimulatedStageTwo_unread`, `simulatedStageTwo_length`, `programIndices_selected_congr`, `usedSimulatedStageTwo_agree`, `simulatedTwoStage`, `simulatedOn`, `simulatedGame_eq_simulatedOn`, `simulatedGame_eq_split`, `simulatedFresh`, `simulatedGame_eq_fresh`, `SimulatedDatum`, `simulatedData`, `simulatedCircuit`, `simulatedGame_eq_used`, `steeredDigested`, `advantage_simulatedGame_steeredDigested_le`; `S`-side step 2 and the `R(u)` identification `Proof/SimulatedReference.lean`: `steeredDigestedBody`, `steeredFiberedBody`, `simulatedData_eq_uniform`, `simulatedCircuit_eq_referenceCircuit`, `steeredDigestedGame`, `steeredSampleEquiv`, `steeredDigested_eq`, `steeredMaskedGame`, `advantage_steeredDigestedGame_steeredMaskedGame_le`, `steeredFiberedDigestGame`, `advantage_steeredMaskedGame_steeredFiberedDigestGame_le`, `steeredFiberGame`, `steeredFiberedDigestGame_eq_steeredFiberGame`, `steeredReferenceRound`, `steeredReferenceGame`, `steeredFiberGame_eq_steeredReferenceGame`, `advantage_steeredDigested_steeredReferenceGame_le`, `advantage_simulatedGame_steeredReferenceGame_le`; the step-7 glue `Proof/Retarget.lean` + `Proof/VisibleGame.lean` (slice 3k); the chunk mass `Proof/Chunk.lean` (slice 3l): `digestChunks`, `joinChunks`, `joinChunks_digestChunks`, `digestChunkEquiv`, `card_block`, `uniformOfFintype_map_fst`/`_snd`, `map_uniformDigest_chunk`, `uniformDigest_chunk_apply`, `fiberChunk_mass_le`; the assembly `Proof/Assembly.lean` (slice 3l): `steeringStep`, `chain_shares_eq`, `workPerAdvantage_of_steering` | **open** (both sides, the accounting and the assembly are done; only the steering hop is not) |
 
 The assembly layer of P10 lives in `Proof/Chain.lean` and `Proof/Reparametrise.lean`; the game
 shapes and the `unread` discharges live in `Proof/GameShape.lean`.
@@ -688,7 +814,20 @@ shows a logged run depends only on the view and the initial log) and `slotBit`/`
   (see `releaseEquiv`, `offsetTerm_releaseMiddle`).
 * `Fintype (BitVec 256)` is declared in `Proof/Reference.lean`; `Fintype (BitVec 384)` in
   `Proof/Simulator.lean`; `Fintype Coordinates` via `Coordinates.data`.
-* The `sorry` must remain the one at `hybridGame_close_to_idealGame` until P10 replaces it.
+* The `sorry` must remain the one at `hybridGame_close_to_idealGame` until the steering hop
+  is proved. Do not move it into a helper lemma: `workPerAdvantage_of_steering` already
+  isolates the residual obligation as a *hypothesis*, which gives the same clarity without a
+  second place for a `sorry` to hide.
+* **`extractLsb'_append_extractLsb'_eq_extractLsb'` is the cheap way to rebuild a `BitVec`
+  from adjacent slices**; right-associate the appends so the merges fire from the low end
+  (`joinChunks`). A `Fintype.card` equality between a `BitVec` and a product of `BitVec`s
+  needs `← pow_add`, not `ring` (`ring` compares 116-digit numerals).
+* **`Equiv.ofBijective` + `Fintype.bijective_iff_injective_and_card` avoids proving
+  `right_inv`** when one direction is a clean rewrite and the cardinalities match
+  (`digestChunkEquiv`).
+* `PMF.map f law` is definitionally `law.bind fun value => PMF.pure (f value)`, so
+  `bind_apply_sub_le` applies to two mapped laws with a `fun _ => rfl` bridge
+  (`fiberChunk_mass_le`).
 * **A structure declared under `Construction/` has no `ext` lemma** (only `@[ext]`
   structures do). Declare the field-wise equality in `Proof/` instead and prove it by
   `obtain ⟨_, …⟩ := first; obtain ⟨_, …⟩ := second; simp_all` (`curveTable_ext`).
