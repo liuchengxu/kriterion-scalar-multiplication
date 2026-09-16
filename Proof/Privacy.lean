@@ -14,6 +14,7 @@ the adversary hits a programmed or hidden label point.
 
 import Proof.Simulator
 import Proof.Uniform
+import Proof.GameShape
 import Solution
 
 namespace Kriterion.ArgoMAC.Security
@@ -211,6 +212,29 @@ theorem hybridGame_eq_core [FieldCertificate] [GroupCertificate]
   funext carrier
   exact bind_run_project idealOracle (fun state => (state.view, state.inputMacKey))
     (fun _ _ => ⟨rfl, rfl⟩) adversary parameter auxiliary _ _
+
+/-- The hybrid game in two-stage shape: a uniform tape and a uniform carrier, the first
+stage on the unprogrammed view, and the honest labels in the second stage. -/
+theorem hybridGame_eq [FieldCertificate] [GroupCertificate]
+    (adversary : AdaptiveAdversary (publicOracleSpec FixedKeyIndex Garbling.EncIndex)
+      AffineInput Garbling.Public LamportSignature Unit)
+    (parameter : Nat) (scalar : NonZeroScalar) (auxiliary : Unit) :
+    idealGame Garbling.garbledCircuit (fun _ => ciphertextBytes) (hybridSimulator scalar)
+        idealOracle adversary parameter scalar auxiliary =
+      (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+        (PMF.uniformOfFintype NonZeroBase).bind fun carrier =>
+          ((adversary.chooseInput parameter
+              (curveTable (setBridge tape ((mulScalar scalar).symm carrier)),
+                carrierBits carrier) auxiliary).run idealOracle
+              (initialState tape (curveTable (setBridge tape ((mulScalar scalar).symm carrier)))
+                carrier)).bind fun selected =>
+            (hybridStageTwo adversary parameter auxiliary
+              (curveTable (setBridge tape ((mulScalar scalar).symm carrier)),
+                carrierBits carrier) selected.1.1 selected.1.2 selected.2).map Prod.fst := by
+  unfold idealGame hybridSimulator hybridStageTwo
+  simp only [PMF.bind_bind, PMF.bind_map, PMF.map_bind, PMF.pure_bind, Function.comp_def,
+    map_fst_loggedOutcome]
+  rfl
 
 /-- The carrier of a bridge key `carrier / scalar` is the masked scalar. -/
 theorem maskScalar_symm [FieldCertificate] (scalar : NonZeroScalar) (carrier : NonZeroBase) :

@@ -402,6 +402,74 @@ theorem simulatedStageTwo_unread [FieldCertificate] [GroupCertificate] (adversar
       encodeAffine_setKeyLabels])
   rw [visible]
 
+/-! ### The unused curve coordinates of the tape -/
+
+/-- The tape with its curve coordinates replaced. The reference game samples them
+separately, so the tape's own copies are marginalised away. -/
+def setCurve (tape : Garbling.Randomness) (curve : NonZeroBase × BaseField × BaseField) :
+    Garbling.Randomness :=
+  { tape with curveMask := curve.1, curveR1 := curve.2.1, curveR2 := curve.2.2 }
+
+/-- Exchanging a tape's curve coordinates with a separate sample is an involution. -/
+def swapCurve : Garbling.Randomness × (NonZeroBase × BaseField × BaseField) ≃
+    Garbling.Randomness × (NonZeroBase × BaseField × BaseField) where
+  toFun pair := (setCurve pair.1 pair.2, (pair.1.curveMask, pair.1.curveR1, pair.1.curveR2))
+  invFun pair := (setCurve pair.1 pair.2, (pair.1.curveMask, pair.1.curveR1, pair.1.curveR2))
+  left_inv pair := by
+    obtain ⟨tape, _⟩ := pair
+    cases tape
+    rfl
+  right_inv pair := by
+    obtain ⟨tape, _⟩ := pair
+    cases tape
+    rfl
+
+/-- A uniform tape with fresh uniform curve coordinates is a uniform tape. -/
+theorem uniform_bind_setCurve {Outcome : Type} (continuation : Garbling.Randomness → PMF Outcome) :
+    ((PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+        (PMF.uniformOfFintype (NonZeroBase × BaseField × BaseField)).bind fun curve =>
+          continuation (setCurve tape curve)) =
+      (PMF.uniformOfFintype Garbling.Randomness).bind continuation := by
+  rw [uniformOfFintype_bind_prod]
+  have swapped := uniformOfFintype_bind_equiv swapCurve
+    fun pair : Garbling.Randomness × (NonZeroBase × BaseField × BaseField) => continuation pair.1
+  simp only [swapCurve, Equiv.coe_fn_mk] at swapped
+  have unprod : ((PMF.uniformOfFintype
+        (Garbling.Randomness × (NonZeroBase × BaseField × BaseField))).bind fun pair =>
+      continuation pair.1) =
+      (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+        (PMF.uniformOfFintype (NonZeroBase × BaseField × BaseField)).bind fun _ =>
+          continuation tape :=
+    (uniformOfFintype_bind_prod
+      fun tape (_ : NonZeroBase × BaseField × BaseField) => continuation tape).symm
+  rw [swapped, unprod]
+  simp only [PMF.bind_const]
+
+/-! ### The simulated game in two-stage shape -/
+
+theorem map_fst_loggedOutcome {Result : Type} (law : PMF (Result × State)) :
+    (law.map loggedOutcome).map Prod.fst = law.map Prod.fst := by
+  rw [PMF.map_comp]
+  rfl
+
+/-- The simulated game: a uniform tape and a uniform carrier, the first stage on the
+unprogrammed view, and the simulated second stage. -/
+theorem simulatedGame_eq [FieldCertificate] [GroupCertificate] (bytes : Nat)
+    (adversary : Adversary) (parameter : Nat) (scalar : NonZeroScalar) (auxiliary : Unit) :
+    idealGame Garbling.garbledCircuit (fun _ => bytes) simulator idealOracle adversary parameter
+        scalar auxiliary =
+      (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+        (PMF.uniformOfFintype NonZeroBase).bind fun carrier =>
+          ((adversary.chooseInput parameter (curveTable tape, carrierBits carrier) auxiliary).run
+              idealOracle (initialState tape (curveTable tape) carrier)).bind fun selected =>
+            (simulatedStageTwo adversary parameter auxiliary
+              (curveTable tape, carrierBits carrier) selected.1.1
+              (checkedScalarMultiplication scalar.value selected.1.1) selected.1.2
+              selected.2).map Prod.fst := by
+  unfold idealGame simulator simulateGarble simulatedStageTwo
+  simp only [PMF.bind_bind, PMF.bind_map, PMF.map_bind, Function.comp_def, map_fst_loggedOutcome]
+  rfl
+
 end
 
 end Kriterion.ArgoMAC.Security
