@@ -1,6 +1,6 @@
 # Proof architecture for `hybridGame_close_to_idealGame`
 
-Status of the tree (after slice 3l): every obligation is proved except the single `sorry` at
+Status of the tree (after slice 3m): every obligation is proved except the single `sorry` at
 `Proof/Privacy.lean`, theorem `hybridGame_close_to_idealGame` (statement must stay
 byte-identical). Both sides of the chain reach a reference game, **the final assembly is
 machine-checked** (`workPerAdvantage_of_steering`, `Proof/Assembly.lean`), and the only
@@ -8,6 +8,13 @@ remaining input is the steering hop -- step 7 -- as a single named inequality be
 explicit games. This document is the plan for closing it, the pieces that are already
 machine-checked, and the constant it produces. The next slice must inherit it rather than
 re-derive it.
+
+Slice 3m built the **lazy-sampling theorem for one fixed-key permutation** (`Proof/Lazy.lean`),
+which is the tool the oracle half of step 7 was missing. It is `sorryAx`-free and self-contained:
+a partial injective assignment, the lazy handler, the run-level eager-to-lazy equivalence, and
+the conditional-uniformity corollary with its `1 / (2 ^ 128 - q)` charge. See "Corrections from
+slice 3m". `hybridGame_close_to_idealGame` still carries the single `sorry` and no constant
+moved.
 
 Slice 3d closed P5 (the deferral, `Proof/Deferred.lean`), P9a (`R(b)` as a `PMF Bool`,
 `Proof/ReferenceGame.lean`) and the generic and stage-1 halves of P3 (`Proof/Hidden.lean`), and
@@ -665,7 +672,126 @@ instead of the whole key; `uniform_bind_setKeyLabel` / `uniform_keyLabel_mem` ar
   it is a self-contained development (a lazy oracle, its state invariant, the run-level
   induction, and the bridge back to `idealOracle`), not a corollary of the counting core.
 
-**What P10 still has to do (as of slice 3l).** Exactly one thing: the hypothesis of
+**Corrections from slice 3m -- the lazy-sampling theorem is LANDED.**
+
+* **VCV-io does NOT supply a transferable eager/lazy framework for a permutation oracle, and
+  the challenge's design note overstates what it gives.** `formal/Cryptography/RandomOracle.lean`
+  imports `VCVio.OracleComp.QueryTracking.RandomOracle.EagerTable`, whose two theorems are
+  `evalSPMF_simulateQ_randomOracle_run'_eq_tableExtending` and its empty-cache corollary. They
+  are about a random **function** oracle `D →ₒ R`: the eager object is a full table `g : D → R`,
+  the lazy object is a `QueryCache`, and the two are glued by `tableExtending c g = fun t =>
+  (c t).getD (g t)` -- overlay the cache on the table. **No analogue of `tableExtending` exists
+  for a permutation**: a partial injective assignment cannot be overlaid on a permutation and
+  still give a permutation, so the induction vehicle does not transfer. The workhorse
+  `evalSPMF_uniformSample_bind_update` ("absorb a fresh uniform draw into the pre-sampled
+  table") is exactly what has to be replaced, and its permutation analogue is the challenge
+  library's own `programCompatiblePermutationEquiv`. Three further mismatches: VCV-io works on
+  `OracleComp` with `SampleableType`, not the challenge's `OracleProgram`/`OracleHandler`; the
+  entry's spec is `publicOracleSpec` with five query kinds and a `State`, not `D →ₒ R`; and
+  `OracleHandler` is **deterministic** (`∀ query, State → Answer × State`), so a lazy handler
+  cannot be written as an `OracleHandler` at all. What did transfer is the *shape*: generalise
+  the cache (here, the assignment) and induct over the program, with a one-step marginalisation
+  lemma as the induction step. That shape is what `Proof/Lazy.lean` follows.
+* **The counting core that IS consumed is `programCompatiblePermutationEquiv`, not
+  `programCompatiblePermutation_uniform`.** The marginal statement
+  (`programCompatiblePermutation_uniform`: programming a fresh point of a uniform compatible
+  permutation is uniform on the extended subtype) is **not strong enough**: after the
+  `PMF.bind_comm` it only says the average over the erased image is right, and the induction
+  needs the *joint* independence of the erased image and the programmed permutation. The
+  library's `programCompatiblePermutationEquiv` is exactly that joint statement
+  (`S ≃ T_{y} × ↑tᶜ`, `π ↦ (program π to y, π x)`), and it is what `compatibleSplit` wraps.
+  `compatiblePermutation_count` / `compatiblePermutation_mass` / `injectiveAssignment_mass` are
+  **not needed at all**: the fibre-cardinality argument they would serve is replaced by the
+  explicit `repin` bijection `T_{y} ≃ T_{z}`, which is `π ↦ π.trans (swap y z)`.
+* **`Proof/Lazy.lean` (new, ~1280 lines, `sorryAx`-free).** The development, in order:
+  * `Assignment := Block → Option Block`, `AssignmentInjective`, `Compatible assign π`,
+    `pinnedDomain` / `pinnedRange`, `pinnedEquiv` (the partial injection as an `Equiv` of its
+    domain with its range), `compatible_iff` (the bridge to the library's `∀ a : s, π a = e a`
+    shape), `nonempty_compatible` (an injective assignment is realised, via
+    `Equiv.extendSubtype`), `unused_nonempty` / `unpinned_nonempty` (cardinality).
+  * **Three total laws**, so no `Nonempty` instance ever has to be carried in a statement:
+    `compatibleLaw assign : PMF (Equiv Block Block)` (uniform over the compatible permutations,
+    `PMF.pure (Equiv.refl _)` on the unreachable non-injective branch), `freshValueLaw assign`
+    (uniform over `{v | v ∉ pinnedRange assign}`) and `freshInputLaw assign` (uniform over
+    `{i | assign i = none}`). This totality is what keeps the run-level statement readable:
+    the conditional law of the permutation given the final transcript is just
+    `compatibleLaw output.2`.
+  * **`compatibleLaw_forward`** -- reading a uniform compatible permutation at an unpinned
+    input is the same as drawing the answer from `freshValueLaw` first and conditioning the
+    permutation on it. This is the marginalisation; it is `compatibleSplit` +
+    `uniformOfFintype_bind_prod` + `PMF.bind_comm` + `repin`.
+  * **`compatibleLaw_inverse`** -- the same for `π.symm` at an unpinned value, obtained by
+    transporting `compatibleLaw_forward` along the **transposed assignment** `pinnedInput`
+    (`pinnedInput assign v = some i ↔ assign i = some v`, `compatible_pinnedInput_iff`,
+    `compatibleSymm`, `pinnedInput_update`). Doing the inverse direction from scratch would
+    have doubled the file.
+  * **`lazyAnswer` / `lazyRun`** -- the lazy handler and the lazy run. `lazyRun` is a direct
+    `PMF`-valued recursion over `OracleProgram`, **not** an `OracleHandler`, because the
+    challenge's handlers are deterministic. It answers a tracked `fixedForward` / `fixedInverse`
+    from the assignment (pinned: return the pin; fresh: draw from `freshValueLaw` /
+    `freshInputLaw` and extend), and every other query from the view. The invariant it
+    maintains is `AssignmentInjective`, preserved by `update_injective` because the new value is
+    drawn from the *unused* values.
+  * **`lazy_query_step`** -- one query step, abstract in the eager and lazy continuations, with
+    the induction hypothesis as a parameter. Nine branches; this is where the whole case
+    analysis lives.
+  * **`compatibleLaw_run`** -- the eager-to-lazy equivalence:
+    ```lean
+    ((compatibleLaw assign).bind fun permutation =>
+        (program.run idealOracle (setPermutation state index permutation)).map fun output =>
+          ((output.1, output.2.log), permutation)) =
+      (lazyRun index program state assign).bind fun output =>
+        (compatibleLaw output.2).map fun permutation => (output.1, permutation)
+    ```
+    i.e. sampling the whole permutation before the run and sampling only the transcript during
+    the run and the permutation afterwards give the same law of `(result, log, permutation)`.
+    Note the output keeps the permutation, which is what makes this usable: it says exactly
+    that **conditionally on `(result, log)` the permutation is uniform over the permutations
+    compatible with the final transcript.**
+  * **`compatibleLaw_map_apply` / `compatibleLaw_map_symm_apply`** -- the conditional-uniformity
+    corollary: given a transcript, `π input` at an unpinned input is *exactly* `freshValueLaw`,
+    and `π.symm value` at an unpinned value is exactly `freshInputLaw`.
+  * **`pinnedCount`, `lazyRun_pinnedCount`** -- a lazy run of a `budget`-query program pins at
+    most `budget` further points, so the transcript of the whole run pins at most `q` points.
+  * **`compatibleLaw_apply_le` / `compatibleLaw_symm_apply_le` and the `toOuterMeasure`
+    singleton forms `compatibleLaw_singleton_le` / `compatibleLaw_symm_singleton_le`** -- the
+    charge: with `pinnedCount assign ≤ budget`, any single value is hit with probability at
+    most `(2 ^ 128 - budget)⁻¹`. Nat subtraction makes the statement unconditional (for
+    `budget ≥ 2 ^ 128` the bound is `⊤`), so no `q < 2 ^ 127` side condition is needed here;
+    the `1 / (2 ^ 128 - q) ≤ 2 / 2 ^ 128` step of the `chainPerQuery` derivation is where that
+    side condition lives, and it is unchanged.
+* **The two remaining bad points are NOT yet charged.** `Proof/Lazy.lean` supplies the missing
+  ingredient and nothing else: the hop's own accounting still has to (i) put the steered and
+  reference rounds into the `setPermutation` / `idealOracle` shape `compatibleLaw_run` expects,
+  (ii) instantiate the union bound over the log with `compatibleLaw_singleton_le` as the
+  per-entry charge, and (iii) fit that to `advantage_bind_le_jointBad`. That is the remaining
+  oracle half; `steeringStep`'s `8 q / 2 ^ 128` already budgets `2 / 2 ^ 128` per point per
+  direction, and `1 / (2 ^ 128 - q) ≤ 2 / 2 ^ 128` for `q < 2 ^ 127`, so **no constant has to
+  move.**
+* **Lean gotchas this slice, all of them about the dependent answer type.**
+  * `request.Answer` is `Block` only after `cases request`, and it stays *syntactically*
+    `(PublicQuery.fixedForward i x).Answer`. `rw` keys on the head symbol **and the type
+    arguments**, so `rw [PMF.pure_bind]`, `rw [PMF.support_map]` and `rw [bind_of_map]` all
+    fail with "did not find an occurrence" against a goal that visibly contains the pattern.
+    Use `calc` with `exact`-elaborated steps (defeq, not keyed matching), give the lemma its
+    explicit arguments (`PMF.pure_bind (value, assign) fun pair => …`), or state a **generic**
+    helper (`eq_of_mem_support_pure`, `exists_of_mem_support_map`) whose own proof does the
+    `rw` at uniform types.
+  * `h ▸ member` on such a hypothesis leaves metavariables; `rw [h] at member` works, because
+    `h`'s left-hand side is the hypothesis's own spelling.
+  * `simp only [lazyAnswer, if_pos rfl, …]` leaves `if True then _ else _` and a residual
+    `a = a` that differs only in the invisible type argument. Plain `simp` followed by `rfl`
+    closes both.
+  * `Nonempty` is a `Prop`, so `haveI`/`letI` of a nonemptiness proof is free of
+    instance-mismatch problems -- but a `Nonempty` *under a binder* must be supplied as a
+    `haveI foo : ∀ value, Nonempty (… value) := …` **before** the statement that needs it,
+    or the statement will not elaborate.
+  * `Fintype.card {x // x ∈ s}` and `Fintype.card ↑s` are the same type but `omega` does not
+    know it; bridge with `Fintype.card_congr (Equiv.refl _)`.
+  * The subtype `Fintype`s here are `Fintype.ofFinite _` global instances; do not `open
+    Classical`, or `Subtype.fintype` becomes applicable and the instances diverge.
+
+**What P10 still has to do (as of slice 3m).** Exactly one thing: the hypothesis of
 `workPerAdvantage_of_steering` (`Proof/Assembly.lean`). Everything else in the chain,
 including the final assembly and the arithmetic, is machine-checked. The hop splits into
 
@@ -678,10 +804,13 @@ second stages by `steeredReleasedStageTwo_offCurve` off the curve and by
 `programAll_steerRequests` on it; and
 
 (b) the **oracle half**, which reduces the double programming of the steering gate to the
-reference game's single programming. Three of its four bad points are now priced
-(`fiberChunk_mass_le`); the fourth needs the lazy-sampling theorem described under
-"Corrections from slice 3l". Build that theorem first; without it the hop cannot be closed
-honestly, and every eager reparametrisation has been checked and ruled out.
+reference game's single programming. Two of its four bad points are priced by
+`fiberChunk_mass_le` (`Proof/Chunk.lean`); the other two are priced by the lazy-sampling
+theorem of slice 3m (`Proof/Lazy.lean`), whose per-entry charge is
+`compatibleLaw_singleton_le`. **The tool exists now; what is left is the bookkeeping that
+puts the hop's two games into the `setPermutation` / `idealOracle` shape `compatibleLaw_run`
+expects and runs the union bound over the log.** Every eager reparametrisation has been
+checked and ruled out (slices 3k and 3l); do not re-attempt them.
 
 **The historical plan below is kept for context.** The whole `H` side is done: steps 1 and 3 (slice 3h,
 `Proof/HybridChain.lean`) and step 2 plus the identification with `R(c/s)` (slice 3i,
@@ -769,7 +898,7 @@ slice 3l).
 | P8 | arithmetic tail `ε ≤ K q/2^128 + ε₀`, `K ≤ 2^28`, `ε₀ ≤ 2^-101` ⇒ `WorkPerAdvantage 100 (q+1) ε`; `advantage ≤ 1` | `Proof/Reference.lean`: `workPerAdvantage_of_le`, `advantage_le_one` | **done** |
 | P9a | `R(b)` as a `PMF Bool`: `programIndices` (unconditional partial programming), `gateKey`/`selectedLabel`/`slotRange`/`tableRow`, `selectedPrograms`, `HashFibers`/`uniformHashFibers`, `programSelected`, `referenceStage2`, `referenceGame`; `run_idealOracle_support` (a run changes only the log); `selectedPrograms_hash`/`_pad`/`_label` | `Proof/ReferenceGame.lean` | **done** |
 | P9b | unfold `idealGame` for `hybridSimulator` and `simulator` into the shape of §4, marginalize unused tape fields, and discharge the `unread` hypothesis of `secondStage_hidden_le` for every second stage: the labels one input leaves unselected (`unreadLabelBits`) are read by no game, because `encodeAffine`, `selectedLabel` and `selectedPrograms` read only the selected label, the reference table ignores the key entirely, and an ideal-oracle run reads only the view and the log | `Proof/GameShape.lean`: `inputLabelBits`, `unreadLabelBits`, `keyLabel_setKeyLabels_of_ne`, `selectedLabel_setKeyLabels`, `encodeAffine_setKeyLabels`, `Coordinates.table_key`, `firstStage_key_congr`, `map_fst_run_congr`, `programAll_view_congr`, `steerRequestLaw`, `steer_eq_map`, `steer_visible_congr`, `stageTwoState`, `decisionLaw`, `bind_decisionLaw`, `hybridStageTwo`/`_unread`, `referenceStageTwo`/`_unread`, `simulatedStageTwo`/`_unread`, `setCurve`, `uniform_bind_setCurve`, `setOracle`, `uniform_bind_setOracle`, `simulatedGame_eq`; `Proof/Privacy.lean`: `hybridGame_eq` | **done** |
-| P10 | assemble §4 with `advantageTriangle` / `event_difference_le` and P8 | assembly layer `Proof/Chain.lean`: `advantage_bind_le_bad`, `advantage_bind_le_jointBad`, `advantage_bind_le_totalDifference`, `advantage_bind_le_of_le`, `advantage_trans`, `sideOneTime`, `chainOneTime`, `chainOneTime_lt`, `workPerAdvantage_of_chain`; first hop's algebra `Proof/Reparametrise.lean`: `usedLabel`, `programFamily_apply`, `freshDigest`/`freshPad`/`freshHash`, `curveGarble_programFamily`, `freshEquiv`, `uniform_map_freshEquiv`; `H`-side steps 1 and 3 `Proof/HybridChain.lean`: `setKey`/`uniform_bind_setKey`, `hybridTwoStage`, `hybridOn`, `hybridGame_eq_hybridOn`, `hybridGame_eq_split`, `freshValue`, `usedPrograms`, `programFamily_eq_programIndices`, `uniform_bind_usedPrograms`, `hybridFresh`, `hybridGame_eq_fresh`, `queryLabelIndex`, `usedHidden`, `UsedBad`, `usedLabel_eq_keyLabel`, `publicAnswer_usedPrograms`, `bind_pairLaw`, `advantage_firstView_le`, `publicAnswer_permutation_congr`, `programIndices_congr_at`, `digestedRaw`, `selectedPrograms_selected`/`_unselected`, `unreadQueryIndex`, `SelectedBad`, `publicAnswer_selectedPrograms`, `selectedStageTwo`/`_unread`/`_length`, `usedStageTwo`/`_agree`, `bind_stageLaw`, `secondBad`, `secondBad_mass_le`, `advantage_secondView_le`, `hybridData`, `digestedReference`, `advantage_hybridGame_digestedReference_le`; `H`-side step 2 and the `R` identification `Proof/HybridReference.lean`: `uniformOfFintype_bind_bijection`, `hybridData_eq_uniform`, `ReferenceDatum` with its projections, `referenceRaw`, `referenceCircuit`, `digestedBody`, `fiberedBody`, `referenceOf`, `hybridCircuit_eq_referenceCircuit`, `digestedGame`, `digestedSampleEquiv`, `digestedReference_eq`, `maskedGame`, `advantage_digestedGame_maskedGame_le`, `fiberedDigestGame`, `advantage_maskedGame_fiberedDigestGame_le`, `digestField_of_mem_uniformHashFibers`, `selectedPrograms_setGate`, `selectedStageTwo_setGate`, `uniformHashFibers_selected`, `fiberGame`, `fiberedDigestGame_eq_fiberGame`, `referenceRound`, `referenceGame_eq`, `referenceGame_eq_split`, `referenceSampleEquiv`, `fiberGame_eq_referenceGame`, `advantage_digestedReference_referenceGame_le`, `advantage_hybridGame_referenceGame_le`; `S`-side steps 4–6 `Proof/SimulatedChain.lean`: `hashBytes_congr`, `padBytes_congr`, `bitEvaluate_congr`, `evaluateDigit_congr`, `curveEvaluate_congr`, `fresh_congr`, `programIfFresh_congr_at`, `programAll_congr_at`, `programAll_untouched`, `publicAnswer_programAll_congr`, `simulateRequestLaw`/`_none`/`_some`/`_support`, `simulateEncode_eq_map`, `simulatedStageTwo_eq`, `steerRequestLaw_support`, `steerRequestLaw_congr`, `simulatedStageTwo_agree`, `usedSimulatedStageTwo`, `selectedSimulatedStageTwo`, `programSelected_stageTwoState`, `selectedSimulatedStageTwo_unread`, `simulatedStageTwo_length`, `programIndices_selected_congr`, `usedSimulatedStageTwo_agree`, `simulatedTwoStage`, `simulatedOn`, `simulatedGame_eq_simulatedOn`, `simulatedGame_eq_split`, `simulatedFresh`, `simulatedGame_eq_fresh`, `SimulatedDatum`, `simulatedData`, `simulatedCircuit`, `simulatedGame_eq_used`, `steeredDigested`, `advantage_simulatedGame_steeredDigested_le`; `S`-side step 2 and the `R(u)` identification `Proof/SimulatedReference.lean`: `steeredDigestedBody`, `steeredFiberedBody`, `simulatedData_eq_uniform`, `simulatedCircuit_eq_referenceCircuit`, `steeredDigestedGame`, `steeredSampleEquiv`, `steeredDigested_eq`, `steeredMaskedGame`, `advantage_steeredDigestedGame_steeredMaskedGame_le`, `steeredFiberedDigestGame`, `advantage_steeredMaskedGame_steeredFiberedDigestGame_le`, `steeredFiberGame`, `steeredFiberedDigestGame_eq_steeredFiberGame`, `steeredReferenceRound`, `steeredReferenceGame`, `steeredFiberGame_eq_steeredReferenceGame`, `advantage_steeredDigested_steeredReferenceGame_le`, `advantage_simulatedGame_steeredReferenceGame_le`; the step-7 glue `Proof/Retarget.lean` + `Proof/VisibleGame.lean` (slice 3k); the chunk mass `Proof/Chunk.lean` (slice 3l): `digestChunks`, `joinChunks`, `joinChunks_digestChunks`, `digestChunkEquiv`, `card_block`, `uniformOfFintype_map_fst`/`_snd`, `map_uniformDigest_chunk`, `uniformDigest_chunk_apply`, `fiberChunk_mass_le`; the assembly `Proof/Assembly.lean` (slice 3l): `steeringStep`, `chain_shares_eq`, `workPerAdvantage_of_steering` | **open** (both sides, the accounting and the assembly are done; only the steering hop is not) |
+| P10 | assemble §4 with `advantageTriangle` / `event_difference_le` and P8 | assembly layer `Proof/Chain.lean`: `advantage_bind_le_bad`, `advantage_bind_le_jointBad`, `advantage_bind_le_totalDifference`, `advantage_bind_le_of_le`, `advantage_trans`, `sideOneTime`, `chainOneTime`, `chainOneTime_lt`, `workPerAdvantage_of_chain`; first hop's algebra `Proof/Reparametrise.lean`: `usedLabel`, `programFamily_apply`, `freshDigest`/`freshPad`/`freshHash`, `curveGarble_programFamily`, `freshEquiv`, `uniform_map_freshEquiv`; `H`-side steps 1 and 3 `Proof/HybridChain.lean`: `setKey`/`uniform_bind_setKey`, `hybridTwoStage`, `hybridOn`, `hybridGame_eq_hybridOn`, `hybridGame_eq_split`, `freshValue`, `usedPrograms`, `programFamily_eq_programIndices`, `uniform_bind_usedPrograms`, `hybridFresh`, `hybridGame_eq_fresh`, `queryLabelIndex`, `usedHidden`, `UsedBad`, `usedLabel_eq_keyLabel`, `publicAnswer_usedPrograms`, `bind_pairLaw`, `advantage_firstView_le`, `publicAnswer_permutation_congr`, `programIndices_congr_at`, `digestedRaw`, `selectedPrograms_selected`/`_unselected`, `unreadQueryIndex`, `SelectedBad`, `publicAnswer_selectedPrograms`, `selectedStageTwo`/`_unread`/`_length`, `usedStageTwo`/`_agree`, `bind_stageLaw`, `secondBad`, `secondBad_mass_le`, `advantage_secondView_le`, `hybridData`, `digestedReference`, `advantage_hybridGame_digestedReference_le`; `H`-side step 2 and the `R` identification `Proof/HybridReference.lean`: `uniformOfFintype_bind_bijection`, `hybridData_eq_uniform`, `ReferenceDatum` with its projections, `referenceRaw`, `referenceCircuit`, `digestedBody`, `fiberedBody`, `referenceOf`, `hybridCircuit_eq_referenceCircuit`, `digestedGame`, `digestedSampleEquiv`, `digestedReference_eq`, `maskedGame`, `advantage_digestedGame_maskedGame_le`, `fiberedDigestGame`, `advantage_maskedGame_fiberedDigestGame_le`, `digestField_of_mem_uniformHashFibers`, `selectedPrograms_setGate`, `selectedStageTwo_setGate`, `uniformHashFibers_selected`, `fiberGame`, `fiberedDigestGame_eq_fiberGame`, `referenceRound`, `referenceGame_eq`, `referenceGame_eq_split`, `referenceSampleEquiv`, `fiberGame_eq_referenceGame`, `advantage_digestedReference_referenceGame_le`, `advantage_hybridGame_referenceGame_le`; `S`-side steps 4–6 `Proof/SimulatedChain.lean`: `hashBytes_congr`, `padBytes_congr`, `bitEvaluate_congr`, `evaluateDigit_congr`, `curveEvaluate_congr`, `fresh_congr`, `programIfFresh_congr_at`, `programAll_congr_at`, `programAll_untouched`, `publicAnswer_programAll_congr`, `simulateRequestLaw`/`_none`/`_some`/`_support`, `simulateEncode_eq_map`, `simulatedStageTwo_eq`, `steerRequestLaw_support`, `steerRequestLaw_congr`, `simulatedStageTwo_agree`, `usedSimulatedStageTwo`, `selectedSimulatedStageTwo`, `programSelected_stageTwoState`, `selectedSimulatedStageTwo_unread`, `simulatedStageTwo_length`, `programIndices_selected_congr`, `usedSimulatedStageTwo_agree`, `simulatedTwoStage`, `simulatedOn`, `simulatedGame_eq_simulatedOn`, `simulatedGame_eq_split`, `simulatedFresh`, `simulatedGame_eq_fresh`, `SimulatedDatum`, `simulatedData`, `simulatedCircuit`, `simulatedGame_eq_used`, `steeredDigested`, `advantage_simulatedGame_steeredDigested_le`; `S`-side step 2 and the `R(u)` identification `Proof/SimulatedReference.lean`: `steeredDigestedBody`, `steeredFiberedBody`, `simulatedData_eq_uniform`, `simulatedCircuit_eq_referenceCircuit`, `steeredDigestedGame`, `steeredSampleEquiv`, `steeredDigested_eq`, `steeredMaskedGame`, `advantage_steeredDigestedGame_steeredMaskedGame_le`, `steeredFiberedDigestGame`, `advantage_steeredMaskedGame_steeredFiberedDigestGame_le`, `steeredFiberGame`, `steeredFiberedDigestGame_eq_steeredFiberGame`, `steeredReferenceRound`, `steeredReferenceGame`, `steeredFiberGame_eq_steeredReferenceGame`, `advantage_steeredDigested_steeredReferenceGame_le`, `advantage_simulatedGame_steeredReferenceGame_le`; the step-7 glue `Proof/Retarget.lean` + `Proof/VisibleGame.lean` (slice 3k); the chunk mass `Proof/Chunk.lean` (slice 3l): `digestChunks`, `joinChunks`, `joinChunks_digestChunks`, `digestChunkEquiv`, `card_block`, `uniformOfFintype_map_fst`/`_snd`, `map_uniformDigest_chunk`, `uniformDigest_chunk_apply`, `fiberChunk_mass_le`; the assembly `Proof/Assembly.lean` (slice 3l): `steeringStep`, `chain_shares_eq`, `workPerAdvantage_of_steering`; **the lazy-sampling theorem `Proof/Lazy.lean` (slice 3m)**: `Assignment`, `AssignmentInjective`, `Compatible`, `pinnedDomain`/`pinnedRange`/`pinnedEquiv`, `compatible_iff`, `nonempty_compatible`, `unused_nonempty`/`unpinned_nonempty`, `compatible_update_iff`, `update_injective`, `compatibleLaw`/`freshValueLaw`/`freshInputLaw`, `uniformOfFintype_bind_of_equiv`, `bind_of_map`, `repin`, `compatibleSplit` (+ `_fst`/`_snd`), `compatibleLaw_forward`, `pinnedInput` (+ `_eq_some_iff`/`_eq_none`/`_injective`/`_update`), `compatible_pinnedInput_iff`, `compatibleSymm`, `compatibleLaw_bind_symm`, `compatibleLaw_inverse`, `setPermutation` (+ the four `publicAnswer_setPermutation_*`), `lazyAnswer`, `lazyRun`, `lazy_query_step`, **`compatibleLaw_run`**, `pinnedCount`, `pinnedDomain_update`, `pinnedCount_update_le`, `card_unused`, **`compatibleLaw_map_apply`**/**`_map_symm_apply`**, `uniform_map_val_apply_le`, **`compatibleLaw_apply_le`**/**`_symm_apply_le`**, `lazyAnswer_pinnedCount`, **`lazyRun_pinnedCount`**, `compatibleLaw_singleton_le`/`_symm_singleton_le` | **open** (both sides, the accounting and the assembly are done; only the steering hop is not) |
 
 The assembly layer of P10 lives in `Proof/Chain.lean` and `Proof/Reparametrise.lean`; the game
 shapes and the `unread` discharges live in `Proof/GameShape.lean`.
