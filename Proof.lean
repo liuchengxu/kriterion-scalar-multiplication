@@ -13,4 +13,5 @@ import Proof.ReferenceGame
 import Proof.Hidden
 import Proof.Distance
 import Proof.Product
+import Proof.GateProduct
 import Proof.DeferredSteering
