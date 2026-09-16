@@ -6,6 +6,11 @@ byte-identical). This document is the plan for closing it, the pieces that are a
 machine-checked, and the constant it produces. The next slice must inherit it rather than
 re-derive it.
 
+Slice 3d closed P5 (the deferral, `Proof/Deferred.lean`), P9a (`R(b)` as a `PMF Bool`,
+`Proof/ReferenceGame.lean`) and the generic and stage-1 halves of P3 (`Proof/Hidden.lean`), and
+corrected the accounting of §4 (crude `K ≤ 10`, see below). The deferral was the only place the
+architecture could have been unformalizable; it is a plain `ENNReal.tsum_comm` argument.
+
 ## 1. The correction that drives the architecture
 
 The slice-3b analysis of the three cases (A off-curve, B on-curve/bit false, C on-curve/bit
@@ -23,6 +28,14 @@ what stage 1 can see, run stage 1, and only then sample (or transform) the rest,
 In a fully pre-sampled model that deferral is a change of coordinates on the sample space
 (`P4` below) plus a bind-swap (`P5`). Both games get the same treatment, and the comparison
 happens in the deferred form. Do not attempt a direct `H ↔ S` sample-space coupling.
+
+`P5` is proved in the **transfer form** (`twoStageGame_congr`): a two-stage game
+`twoStageGame law view rest stage1 stage2 = law >>= ω ↦ stage1 (view ω) >>= r ↦ stage2 (view ω)
+(rest r ω) r` depends on `law` only through the joint laws `map (ω ↦ (view ω, rest r ω)) law`, one
+per first-stage result `r`. So step 7 needs no explicit conditional law: it is
+`twoStageGame_congr` with `view = (tape, c, table)`, `rest r = selected outputs of r.inp`, and the
+per-input joint-law equality supplied by `P4`. The factored form of the doc
+(`twoStageGame_eq_deferredGame`, hidden law `ν r v`) is also proved but is not needed.
 
 ## 2. The reference game `R(b)`
 
@@ -52,8 +65,16 @@ needed to garble.
 * Stage 2 runs on the programmed view with the honest labels
   `Lamport.selectedLabels (K.encodeAffine inp)`.
 
-`R(b)` is not yet defined as a `PMF` in Lean; its sample space, table, and the two laws it needs
-(`P4`) are. Defining it is the first task of the next slice (`P9a`).
+`R(b)` is `referenceGame bridge adversary parameter auxiliary` in `Proof/ReferenceGame.lean`,
+with `bridge : NonZeroBase → BaseField` the bridge key as a function of the carrier (`R(c/s)` is
+`bridge := fun c => c / s`). Stage 2 is `referenceStage2`: it samples `uniformHashFibers o` (one
+384-bit fiber sample per gate, `HashFibers`), builds `selectedPrograms K inp o rows fibers :
+Programs` (`FixedKeyIndex → Option (Block × Block)`: hash slots of `false` gates at the selected
+label to the fiber chunks, pad slots of `true` gates to `rows ⊕ fieldBytes o`; everything else
+`none`), and runs `decide` on `programSelected`, i.e. the stage-1 state with `programIndices`
+applied to its fixed-key oracle. Programming is **unconditional** (`programmed π ℓ r = π.trans
+(swap (π ℓ) r)`, the same shape as `programAt` and `programPermutation`); the simulator's
+`programIfFresh` agrees with it on every good log, which is the only place the two are compared.
 
 ## 3. Why `R(b)` and the visible laws (`P4`, proved)
 
@@ -121,11 +142,28 @@ game (table for `u = tape.bridgeKey`, steering at `(x7, 0)`), `q₁, q₂` for t
    points per direction at those five indices, stage 1 only) — `P7`.
 8. Triangle inequality (`advantageTriangle`, `event_difference_le`) and `P8`.
 
-**Accounting.** Bad-event terms: `2q/2^128` (step 3) + `2q₁/2^128 + 2q₂/2^128` (steps 5–6) +
-the `(x7,0)` reparametrization points (already inside the per-index count of step 5). So
-`advantage ≤ 4q/2^128 + ε₀`, i.e. **K = 4**, with
-`ε₀ ≤ 2·1270·2^-131 + 3/p < 2^-119`. `workPerAdvantage_of_le` (proved) closes the obligation from
-`K ≤ 2^28` and `ε₀ ≤ 2^-101`; the margin to the wall is `2^26`.
+**Accounting (corrected in slice 3d).** Each identical-until-bad hop is one application of
+`bind_identical_until_bad` + `run_idealOracle_agree`, whose `good` condition ranges over the
+**whole final log**: a stage-2 re-query of a stage-1 entry that hit a hidden point would be
+answered differently by the two views, so the stage-1 entries must also be charged against the
+stage-2 hidden set. Hence every hop costs `2·q/2^128` with `q = q₁ + q₂`, not `2·q₂`. The hops:
+step 3 as two hops via the mixed game (stage 1 on `π°`, stage 2 on `π_H`): `2q + 2q`; step 5:
+`2q`; step 6: `2q`; step 7's `swap(r₁, r₂)` reparametrization of `π°` at the five `(x7,0,·)`
+indices: `2q` (it is *not* inside step 5's count: merging it into step 5 gives 3 points per
+direction at those indices, `K = 3` for that hop, which is no better). Crude total
+`advantage ≤ 10q/2^128 + ε₀`, i.e. **K ≤ 10** (`K = 4` was an undercount), with
+`ε₀ ≤ 2·1270·2^-131 + 3/p < 2^-119`. `workPerAdvantage_of_le` (proved) closes the obligation
+from `K ≤ 2^28` and `ε₀ ≤ 2^-101`; the margin to the wall is `2^24`.
+
+The stage-1 half of each bad bound is `firstStage_hidden_le` (`Proof/Hidden.lean`): for any game
+that samples the label key up front and whose first stage runs on data independent of the key,
+the mass of "some stage-1 entry `e` has `keyLabel K (which e) ∈ hidden(data, e)`" is at most
+`k·q₁/2^128` when every `hidden` set has at most `k` points. The hidden sets of one programmed
+permutation are `forwardHidden`/`inverseHidden` (`k = 2`, `hiddenLabels_card`), and
+`publicAnswer_programIndices_single` is the matching "views agree off the hidden set" fact for
+`run_idealOracle_agree`. The stage-2 half (the unselected label of the entry's gate, which the
+stage-2 run does not read) needs the per-index involution `setKeyLabel` at that one label
+instead of the whole key; `uniform_bind_setKeyLabel` / `uniform_keyLabel_mem` are in place.
 
 Two things the slice-3b analysis had that this chain does **not** need: hiding all 1270
 unselected-label values by an explicit shift (absorbed by `P4`), and the `(2^128 − q)`
@@ -138,18 +176,20 @@ probability exactly `k/2^128`).
 |---|---|---|---|
 | P1 | programming involution `(π, r) ↦ (π programmed at ℓ to r, π ℓ)`; uniform `π` = uniform `π°` programmed at fresh uniform `r`; family version over `FixedKeyIndex` | `Proof/Programming.lean`: `programAt`, `programAtEquiv`, `uniform_programAt`, `programFamily`, `uniform_programFamily` | **done** |
 | P2 | deterministic identical-until-bad for logged runs: same log, views agreeing off `bad` ⇒ same `(result, log)` law on good logs; bind form of `identical_until_bad`; log monotone, log length ≤ initial + budget | `Proof/Logged.lean`: `run_idealOracle_agree`, `bind_identical_until_bad`, `run_idealOracle_log_mono`, `run_idealOracle_log_length` | **done** |
-| P3 | independence bad-bounds: if the log is a function of data independent of a uniform label `ℓ`, `P[log hits k points determined by ℓ] ≤ k·|log|/2^128`; needs `bind_comm` to sample `ℓ` (and `ρ ⊕ ℓ`) after the run, then a union bound over the log entries | — | open |
+| P3 | independence bad-bounds: union bound over a log (`hidden_label_bound`); one label of a uniform key is a uniform block (`setKeyLabel` involution, `map_keyLabel_uniform`, `uniform_keyLabel_mem`); hidden sets of one programmed permutation, 2 per direction (`forwardHidden`, `inverseHidden`, `hiddenLabels_card`, `publicAnswer_programIndices_single`); stage-1 bound with the key sampled up front (`firstStage_key_deferred`, `firstStage_hidden_le`) | `Proof/Hidden.lean` | **stage 1 done**; stage-2 (unselected-label) bound open |
 | P4 | static bijection raw ↔ middle; `c0` affine in `mask`; visible law uniform off-curve, shift law on-curve | `Proof/Reference.lean`: `middleEquiv`, `Coordinates.table_c0_eq`, `visibleCoordinates_offCurve`, `visibleCoordinates_onCurve` | **done** |
-| P5 | bind-swap: if stage 1 depends only on `view₁(ω)` and, for every `inp`, `map (ω ↦ (view₁ ω, rest inp ω)) μ = bind μ₁ (v ↦ map (v, ·) (ν inp v))`, then `bind μ (ω ↦ stage1 (view₁ ω) >>= r ↦ stage2 (view₁ ω) (rest r.inp ω) r) = bind μ₁ (v ↦ stage1 v >>= r ↦ bind (ν r.inp v) (o ↦ stage2 v o r))` (`ENNReal.tsum_comm`) | — | open |
+| P5 | deferred sampling: transfer form `twoStageGame_congr` (equal joint laws of `(view, rest r)` per first-stage result ⇒ equal games) and factored form `twoStageGame_eq_deferredGame`; both by `tsum_map_mul` + `ENNReal.tsum_comm` | `Proof/Deferred.lean`: `twoStageGame`, `deferredGame`, `twoStageGame_apply`, `twoStageGame_congr`, `twoStageGame_eq_deferredGame`, `map_view_of_joint` | **done** |
 | P6 | TV facts: `U(F*)` vs `U(F)` = `1/p`; 384-bit uniform vs (`U(F)` then `uniformHashFiber`) ≤ `p/2^384` via `Nat.count_modEq_card`; product/bind subadditivity from VCVio `tvDist_bind_left_le`/`tvDist_bind_right_le`/`tvDist_map_le` | — | open |
 | P7 | `steer` in deferred form: on-curve `wanted = o x7 0 + (c/s − u)`; the hash branch equals `R`'s programming at `(x7,0)` after `π° ↦ swap(r₁,r₂)∘π°`; the pad branch equals `R`'s pad programming | uses `Proof/Steering.lean` (`steer_release`, `decrypt_programmed`, `hashToField_programmed`) | open |
 | P8 | arithmetic tail `ε ≤ K q/2^128 + ε₀`, `K ≤ 2^28`, `ε₀ ≤ 2^-101` ⇒ `WorkPerAdvantage 100 (q+1) ε`; `advantage ≤ 1` | `Proof/Reference.lean`: `workPerAdvantage_of_le`, `advantage_le_one` | **done** |
-| P9a | define `R(b)` as a `PMF Bool` (state `State`, handler `idealOracle`, programming at selected labels with `programAll`, fiber samples for bit-0 gates) | — | open |
+| P9a | `R(b)` as a `PMF Bool`: `programIndices` (unconditional partial programming), `gateKey`/`selectedLabel`/`slotRange`/`tableRow`, `selectedPrograms`, `HashFibers`/`uniformHashFibers`, `programSelected`, `referenceStage2`, `referenceGame`; `run_idealOracle_support` (a run changes only the log); `selectedPrograms_hash`/`_pad`/`_label` | `Proof/ReferenceGame.lean` | **done** |
 | P9b | unfold `idealGame` for `hybridSimulator` and `simulator` into the shape of §4 (as `hybridGame_eq_core` does), marginalize unused tape fields (`uniform_bind_setBridge` pattern) | `Proof/Privacy.lean` has the hybrid half | open |
 | P10 | assemble §4 with `advantageTriangle` / `event_difference_le` and P8 | — | open |
 
 Dependencies: P9a needs P4's definitions; P3 needs P2 (log length) and P9a; P5 needs P4; P7 needs
-P1 and P9a; P10 needs everything. Generic helpers are in `Proof/Uniform.lean`
+P1 and P9a; P10 needs everything. Slice 3d also added `Adversary`/`Selected` abbreviations,
+`firstState`/`loggedFirstStage` (the stage-1 run in logged, key-free form; `map_loggedOutcome_congr`
+shows a logged run depends only on the view and the initial log) and `slotBit`/`queryIndex`. Generic helpers are in `Proof/Uniform.lean`
 (`uniformOfFintype_bind_equiv`, `uniformOfFintype_bind_prod`, `uniformOfFintype_map_equiv`,
 `bind_congr_support`).
 
@@ -162,3 +202,10 @@ P1 and P9a; P10 needs everything. Generic helpers are in `Proof/Uniform.lean`
 * `Fintype (BitVec 256)` is declared in `Proof/Reference.lean`; `Fintype (BitVec 384)` in
   `Proof/Simulator.lean`; `Fintype Coordinates` via `Coordinates.data`.
 * The `sorry` must remain the one at `hybridGame_close_to_idealGame` until P10 replaces it.
+* `exact inductionHypothesis _ _ member` in an induction over `OracleProgram` can time out at
+  `whnf` when the expected type fixes the state by unification before `member` is seen (it then
+  unfolds `run`); pass the state explicitly, as in `run_idealOracle_support`.
+* `public` is a keyword; name the public value `circuit`. `Nonempty InputMacKey` is declared in
+  `Proof/Hidden.lean`.
+* Chunk convention for a 384-bit hash / 256-bit pad at slot `j`: `extractLsb' (128 * j) 128`
+  (`slotRange`), matching `hashRequests`/`padRequests`.
