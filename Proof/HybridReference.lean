@@ -241,6 +241,172 @@ theorem digestedReference_eq [FieldCertificate] (scalar : NonZeroScalar) (advers
   rw [left, right, ← uniformOfFintype_bind_bijection digestedSampleEquiv]
   rfl
 
+/-! ### Step 2, first hop: the nonzero mask becomes a uniform field element -/
+
+/-- The game with the curve mask uniform over the whole field. -/
+def maskedGame [FieldCertificate] (scalar : NonZeroScalar) (adversary : Adversary)
+    (parameter : Nat) (auxiliary : Unit) : PMF Bool :=
+  (PMF.uniformOfFintype ReferenceDatum).bind fun datum =>
+    (PMF.uniformOfFintype BaseField).bind fun mask =>
+      (PMF.uniformOfFintype (GateValues (BitVec 384))).bind fun digests =>
+        digestedBody scalar adversary parameter auxiliary datum mask (digestField digests) digests
+
+/-- Replacing the nonzero mask by a uniform field element costs `2 / p`. -/
+theorem advantage_digestedGame_maskedGame_le [FieldCertificate] (scalar : NonZeroScalar)
+    (adversary : Adversary) (parameter : Nat) (auxiliary : Unit) :
+    advantage (digestedGame scalar adversary parameter auxiliary)
+        (maskedGame scalar adversary parameter auxiliary) ≤ 2 / (baseFieldModulus : ℝ) :=
+  advantage_bind_le_of_le _ _ _ _ fun _ =>
+    (advantage_bind_le_totalDifference _ _ _).trans mask_total_difference
+
+/-! ### Step 2, second hop: the digests become a field element and a fiber sample -/
+
+/-- The game whose hash secrets are a uniform field element per gate, still read through a
+fiber of themselves. -/
+def fiberedDigestGame [FieldCertificate] (scalar : NonZeroScalar) (adversary : Adversary)
+    (parameter : Nat) (auxiliary : Unit) : PMF Bool :=
+  (PMF.uniformOfFintype ReferenceDatum).bind fun datum =>
+    (PMF.uniformOfFintype BaseField).bind fun mask =>
+      ((PMF.uniformOfFintype (GateValues BaseField)).bind uniformHashFibers).bind fun digests =>
+        digestedBody scalar adversary parameter auxiliary datum mask (digestField digests) digests
+
+/-- Replacing the fresh digest of every gate by a uniform field element and a uniform fiber
+sample of it costs `1270 * p / 2 ^ 384`. -/
+theorem advantage_maskedGame_fiberedDigestGame_le [FieldCertificate] (scalar : NonZeroScalar)
+    (adversary : Adversary) (parameter : Nat) (auxiliary : Unit) :
+    advantage (maskedGame scalar adversary parameter auxiliary)
+        (fiberedDigestGame scalar adversary parameter auxiliary) ≤
+      1270 * ((baseFieldModulus : ℝ) / 2 ^ 384) := by
+  refine advantage_bind_le_of_le _ _ _ _ fun _ => advantage_bind_le_of_le _ _ _ _ fun _ => ?_
+  refine (advantage_bind_le_totalDifference _ _ _).trans ?_
+  rw [totalDifference_comm]
+  exact hashFibers_total_difference
+
+/-! ### Step 2, the free half: deferring the fiber sample to the selected outputs -/
+
+/-- The digests of a fiber sample reduce to the outputs the sample was taken at. -/
+theorem digestField_of_mem_uniformHashFibers (outputs : GateValues BaseField)
+    (fibers : GateValues (BitVec 384))
+    (member : fibers ∈ (uniformHashFibers outputs).support) :
+    digestField fibers = outputs := by
+  unfold uniformHashFibers at member
+  rw [PMF.support_map] at member
+  obtain ⟨element, _, rfl⟩ := member
+  funext adaptor position
+  exact element.property adaptor position
+
+/-- The reference game programs nothing from the fiber of a gate whose input bit is set: its
+hash slots read the label the input leaves unselected. -/
+theorem selectedPrograms_setGate (key : InputMacKey) (input : AffineInput)
+    (outputs : GateValues BaseField) (rows : GateValues BitAdaptor.Ciphertext)
+    (fibers : GateValues (BitVec 384)) (gate : Gate) (value : BitVec 384)
+    (bit : inputBits input gate.1 gate.2 = true) :
+    selectedPrograms key input outputs rows (setGate gate value fibers) =
+      selectedPrograms key input outputs rows fibers := by
+  funext index
+  obtain ⟨adaptor, position, slot⟩ := index
+  cases slot with
+  | hash chunk =>
+    rw [selectedPrograms_hash, selectedPrograms_hash]
+    cases set : inputBits input adaptor position with
+    | true => rw [if_pos rfl, if_pos rfl]
+    | false =>
+      have other : (adaptor, position) ≠ gate := by
+        intro equal
+        rw [show adaptor = gate.1 from congrArg Prod.fst equal,
+          show position = gate.2 from congrArg Prod.snd equal, bit] at set
+        exact Bool.noConfusion set
+      rw [if_neg (by simp), if_neg (by simp), setGate_apply, if_neg other]
+  | pad chunk => rw [selectedPrograms_pad, selectedPrograms_pad]
+
+/-- The reference-shaped second stage never reads the fiber of a gate whose input bit is
+set. -/
+theorem selectedStageTwo_setGate (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (circuit : Garbling.Public) (input : AffineInput) (advState : adversary.State)
+    (outputs : GateValues BaseField) (fibers : GateValues (BitVec 384)) (state : State)
+    (gate : Gate) (value : BitVec 384) (bit : inputBits input gate.1 gate.2 = true) :
+    selectedStageTwo adversary parameter auxiliary circuit input advState outputs
+        (setGate gate value fibers) state =
+      selectedStageTwo adversary parameter auxiliary circuit input advState outputs fibers
+        state := by
+  unfold selectedStageTwo programSelected
+  rw [selectedPrograms_setGate state.inputMacKey input outputs (tableRow state.table) fibers gate
+    value bit]
+
+/-- The reference game's fiber sample is taken at the selected outputs, which agree with the
+sampled hash secrets off the gates whose input bit is set. Those gates' fibers are read
+nowhere, so the two samples give the same game. -/
+theorem uniformHashFibers_selected (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (circuit : Garbling.Public) (input : AffineInput) (advState : adversary.State)
+    (raw : Coordinates) (state : State)
+    (continuation : GateValues (BitVec 384) → PMF (Bool × List Query))
+    (body : ∀ fibers, continuation fibers =
+      selectedStageTwo adversary parameter auxiliary circuit input advState
+        (encodeCoordinates input raw).hash fibers state) :
+    ((uniformHashFibers raw.hash).bind fun fibers => (continuation fibers).map Prod.fst) =
+      (uniformHashFibers (encodeCoordinates input raw).hash).bind fun fibers =>
+        (continuation fibers).map Prod.fst := by
+  refine uniformHashFibers_bind_congr raw.hash (encodeCoordinates input raw).hash
+    (Finset.univ.filter fun gate : Gate => inputBits input gate.1 gate.2 = true) _ ?_ ?_
+  · intro gate notMember
+    have unset : inputBits input gate.1 gate.2 = false := by
+      by_cases set : inputBits input gate.1 gate.2 = true
+      · exact absurd (Finset.mem_filter.mpr ⟨Finset.mem_univ gate, set⟩) notMember
+      · simpa using set
+    simp [encodeCoordinates, selectOutput, unset]
+  · intro gate member fibers value
+    have set : inputBits input gate.1 gate.2 = true := (Finset.mem_filter.mp member).2
+    rw [body, body, selectedStageTwo_setGate adversary parameter auxiliary circuit input advState
+      (encodeCoordinates input raw).hash fibers state gate value set]
+
+/-- The reference game itself: the fiber sample is taken after the input is chosen, at the
+selected outputs. -/
+def fiberGame [FieldCertificate] (scalar : NonZeroScalar) (adversary : Adversary)
+    (parameter : Nat) (auxiliary : Unit) : PMF Bool :=
+  (PMF.uniformOfFintype ReferenceDatum).bind fun datum =>
+    (PMF.uniformOfFintype BaseField).bind fun mask =>
+      (PMF.uniformOfFintype (GateValues BaseField)).bind fun hash =>
+        fiberedBody scalar adversary parameter auxiliary datum mask hash
+
+/-- Deferring the fiber sample past the first stage and moving it to the selected outputs is
+free. -/
+theorem fiberedDigestGame_eq_fiberGame [FieldCertificate] (scalar : NonZeroScalar)
+    (adversary : Adversary) (parameter : Nat) (auxiliary : Unit) :
+    fiberedDigestGame scalar adversary parameter auxiliary =
+      fiberGame scalar adversary parameter auxiliary := by
+  unfold fiberedDigestGame fiberGame
+  refine congrArg (PMF.bind _) (funext fun datum => ?_)
+  refine congrArg (PMF.bind _) (funext fun mask => ?_)
+  rw [PMF.bind_bind]
+  refine congrArg (PMF.bind _) (funext fun hash => ?_)
+  have reduce : ((uniformHashFibers hash).bind fun digests =>
+      digestedBody scalar adversary parameter auxiliary datum mask (digestField digests)
+        digests) =
+      (uniformHashFibers hash).bind fun fibers =>
+        digestedBody scalar adversary parameter auxiliary datum mask hash fibers :=
+    bind_congr_support fun fibers member =>
+      congrArg (fun outputs => digestedBody scalar adversary parameter auxiliary datum mask
+        outputs fibers) (digestField_of_mem_uniformHashFibers hash fibers member)
+  rw [reduce]
+  unfold digestedBody fiberedBody
+  rw [PMF.bind_comm (uniformHashFibers hash)
+    (loggedFirstStage adversary parameter auxiliary (referenceCircuit scalar datum mask hash)
+      (referenceView datum))
+    fun fibers outcome =>
+      (selectedStageTwo adversary parameter auxiliary
+        (referenceCircuit scalar datum mask hash) outcome.1.1 outcome.1.2
+        (encodeCoordinates outcome.1.1 (referenceRaw datum mask hash)).hash fibers
+        (stageTwoState (referenceView datum) outcome.2
+          (referenceCircuit scalar datum mask hash).1 (referenceCarrier datum)
+          (referenceKey datum))).map Prod.fst]
+  refine congrArg (PMF.bind _) (funext fun outcome => ?_)
+  exact uniformHashFibers_selected adversary parameter auxiliary
+    (referenceCircuit scalar datum mask hash) outcome.1.1 outcome.1.2
+    (referenceRaw datum mask hash)
+    (stageTwoState (referenceView datum) outcome.2
+      (referenceCircuit scalar datum mask hash).1 (referenceCarrier datum) (referenceKey datum))
+    _ fun _ => rfl
+
 end
 
 end Kriterion.ArgoMAC.Security
