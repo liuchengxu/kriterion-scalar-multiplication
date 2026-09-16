@@ -86,14 +86,14 @@ second stage on the programmed state, and hop B over the pair of second stages
 `hybridGame_close_to_idealGame` still carries the single `sorry`. See "What P10 still has to
 do" and the constant assignment below.
 
-Slice 3k built the two-stage glue and the visible joint law that step 7 consumes
-(`Proof/VisibleGame.lean`), the off-curve half of the steering identification, and a new
+Slice 3k built the two-stage glue and the visible joint laws that step 7 consumes
+(`Proof/VisibleGame.lean`), the off-curve half of the steering identification, and a
 reparametrisation tool for a doubly programmed permutation (`Proof/Retarget.lean`). It did
-**not** close step 7, because step 7 as scheduled in §4 is not provable with the tools the
-tree has. The obstruction is analysed under "Corrections from slice 3k" below; it is a
-real gap in the plan, not a missing lemma, and the next slice must re-order the `S` side
-rather than push harder on step 7 where it now sits. `hybridGame_close_to_idealGame` still
-carries the single `sorry`.
+**not** close step 7: §4's step 7 is **not provable with the tools the tree has**, and the
+obstruction is a real gap in the plan rather than a missing lemma. It is analysed in full
+under "Corrections from slice 3k" below, together with the tool that would close it and the
+`K` decision that closing it forces. `hybridGame_close_to_idealGame` still carries the
+single `sorry`, and no constant was moved.
 
 ## 1. The correction that drives the architecture
 
@@ -503,19 +503,38 @@ instead of the whole key; `uniform_bind_setKeyLabel` / `uniform_keyLabel_mem` ar
   fit the frozen `2 q / 2^128`. §4's note "the `R`-side bounds sample the hidden label
   fresh, so each log entry hits with probability exactly `k/2^128`" does not apply to this
   hop.
-* **The fix is to move the steering removal to where the ranges are fresh uniform blocks:
-  immediately after step 4, before step 5.** Right after the first hop the oracle is
-  `programIndices (usedPrograms key (freshValue digests pads)) oracle` and the honest range
-  at a steering index is `chunk(digests) ⊕ usedLabel key index` with `digests` **uniform**
-  — and `usedLabel key index` is input-independent, because the steered indices are exactly
-  the ones whose slot bit is the input's. With a uniform honest range, `programAtEquiv`
-  makes the doubly programmed view a *singly* programmed view of a uniform permutation with
-  a free erased image, so the steering can be absorbed into the first hop's programming
-  exactly. §4 already anticipated this ("merging it into step 5 gives 3 points per
-  direction at those indices"); what it got wrong is that the merge is not an optimisation,
-  it is the only place the argument closes. Steps 5 and 6 then have to be re-run on the
-  merged shape, which is plumbing, not new mathematics: they are already generic in the
-  second stage (`advantage_firstView_le`, `advantage_secondStage_le`).
+* **Moving the hop earlier does not help, and this was checked.** Doing the steering
+  removal right after step 4 makes the honest range `chunk(digests) ⊕ usedLabel key index`
+  with `digests` *marginally* uniform, but the released table is a function of
+  `digestField digests`, so conditionally on what the adversary sees the digest is uniform
+  only **in the fiber of a visible field element** — exactly the same conditional law as
+  after step 2. And the steered range still depends on `wanted = o x7 0 + δ`, hence on the
+  adaptively chosen input, so the circularity above is not removed either. The merge §4
+  contemplated ("merging it into step 5") therefore buys nothing.
+* **The ingredient step 7 actually needs is a random-permutation bound, and the challenge
+  library already has its counting core.** Three of the four bad points
+  (`π⁻¹ f`, `π⁻¹ s`, `ρ = π ℓ`) are hit only by a query that inverts or evaluates the
+  *unprogrammed* permutation at a point the adversary has not pinned; conditionally on the
+  whole transcript each is uniform over at least `2^128 - q` values. That is a lazy-sampling
+  statement, and `formal/Cryptography/Permutation.lean` supplies its counting core:
+  `compatiblePermutation_count` / `compatiblePermutation_mass` (the mass of the
+  permutations compatible with a partial assignment is a factorial ratio),
+  `injectiveAssignment_mass`, and `programCompatiblePermutation_uniform` (programming a
+  fresh point of a compatible permutation is again uniform). Building the adaptive-run
+  conditional-uniformity lemma on top of these is the work step 7 still owes; nothing in
+  `Proof/` currently does it, which is why every existing hop is bounded on a *label*
+  instead.
+* **The fourth bad point (`y = f`, i.e. guessing the discarded honest chunk) needs a mass
+  bound for one 128-bit chunk of `uniformHashFiber v`.** Its largest point mass is about
+  `1.11 / 2^128` (the fiber has about `2^384 / p ≈ 1.35 · 2^130` elements and a fixed chunk
+  value is taken by at most about six of them), so it is **not** `1/2^128`.
+* **Consequence for the accounting.** With `1/(2^128 - q)` denominators for three points
+  and `≈ 1.11/2^128` for the fourth, the honest charge for this hop is above
+  `2 q / 2^128`. `workPerAdvantage_of_le` tolerates any `K ≤ 2^28`, so the chain still
+  closes comfortably at, say, `K = 12` or `K = 16`; but `workPerAdvantage_of_chain` is
+  stated at exactly `K = 10` and `Proof/Chain.lean` is frozen, so **closing step 7 will
+  require the driver to re-open `Proof/Chain.lean` and raise `K`**. This is a decision, not
+  an implementation detail, and slice 3k did not take it: no constant was moved.
 * **The `6/2^128` one-time term is not needed on the new route.**
   `programIndices_steerPrograms`'s freshness side condition (`π ℓ ∉ {f, s}`) exists only to
   make `programmed_programmed` compose. `uniform_programmed_retarget`
@@ -550,24 +569,23 @@ instead of the whole key; `uniform_bind_setKeyLabel` / `uniform_keyLabel_mem` ar
 identification with `R(u)` + steering (slice 3j, `Proof/SimulatedReference.lean`). What is
 left, in order:
 
-(i) **step 7, re-scheduled (slice 3k)**: the steering must be removed on the `S` side
-**between step 4 and step 5**, where the honest range at each steering index is a uniform
-128-bit chunk of the fresh digests and the label the steering programs at is
-`usedLabel key index`, which does not depend on the adaptively chosen input. Use
-`programAtEquiv` / `uniform_programmed_erased` to absorb the steering's programming into the
-first hop's programming, then re-run steps 5 and 6 (both are already generic in the second
-stage) and the `S` side's step 2 on the merged shape. What is left after that is the pure
-*visible-law* identification, for which everything is now in place:
-`twoStageGame_congr_support` with `referenceRound_eq_twoStageGame` /
+(i) **step 7, in two halves (slice 3k)**. The *visible-law* half is ready: apply
+`twoStageGame_congr_support` to `referenceRound_eq_twoStageGame` and
 `steeredReferenceRound_eq_twoStageGame`, discharging the joint law by
-`map_releasedPair_offCurve` off the curve and `map_releasedPair_onCurve` on it, and the
-second stages by `steeredReleasedStageTwo_offCurve` off the curve and by
-`steer_programSelected` + `uniformHashFibers_setSteering` on it. Budget: `2 (q₁+q₂)/2^128`;
-the `6/2^128` is no longer needed (see "Corrections from slice 3k").
+`map_releasedPair_offCurve` off the curve and `map_releasedPair_onCurve` on it (with the
+hidden part on the steered side taken to be `shiftSteering δ` of the selected outputs), and
+the second stages by `steeredReleasedStageTwo_offCurve` off the curve and by
+`steer_programSelected` + `uniformHashFibers_setSteering` + `steerTo_eq_map` +
+`programAll_steerRequests` on it.
 
-Do **not** attempt step 7 in its slice-3j position (after the `S` side's step 2): the honest
-range is then a fiber chunk, the label is known to the second stage, and the hop is not
-bounded by anything the tree has. The analysis is written out above.
+The *oracle* half is the open one: the double programming of the steering gate has to be
+reduced to the reference game's single programming, and that step is **not** bounded by any
+label deferral. See "Corrections from slice 3k" for why, for the four bad points, and for
+the random-permutation tool (`Cryptography/Permutation.lean`) the bound has to be built on.
+It also needs a driver decision on `K` in `Proof/Chain.lean`.
+
+Do **not** re-attempt the `swapRanges` route of `programIndices_steerPrograms`, and do not
+try to move the hop between steps 4 and 5: both are analysed and ruled out above.
 
 (ii) chain `advantage_hybridGame_referenceGame_le`, step 7 and
 `advantage_simulatedGame_steeredReferenceGame_le` with `advantage_trans` (the `S` side
@@ -594,7 +612,7 @@ is needed) and close with `workPerAdvantage_of_chain`.
 | 2 twin (1270 digests → field + fiber) | S | 0 | `1270·p/2^384` | **done** (`advantage_steeredMaskedGame_steeredFiberedDigestGame_le`) |
 | 2 twin (fiber sample → selected outputs) | S | 0 | 0 | **done** (`steeredFiberedDigestGame_eq_steeredFiberGame`) |
 | 2 twin (identify with `R(u)` + steering) | S | 0 | 0 | **done** (`steeredFiberGame_eq_steeredReferenceGame`) |
-| 7 (steering removal and the visible-law identification) | S | `2q/2^128` | `6/2^128` budgeted, **not needed** on the re-scheduled route | open (slice 3k: glue, off-curve half and the reparametrisation tool built; the hop must move to between steps 4 and 5) |
+| 7 (steering removal and the visible-law identification) | S | `2q/2^128` budgeted; the honest charge is larger (see slice 3k) | `6/2^128` budgeted | open (slice 3k built the glue, the visible joint laws, the off-curve half and the reparametrisation tool; the oracle half needs a random-permutation bound and a `K` decision) |
 
 Slice 3h consumed `4·(q₁+q₂)/2^128` of the per-query budget and none of the one-time budget.
 **Slice 3i consumed exactly one `sideOneTime`** of the one-time budget and none of the
