@@ -434,3 +434,245 @@ theorem simulatedStageTwo_agree [FieldCertificate] [GroupCertificate] (adversary
       exact selectedAt request.index (simulateRequestLaw_support _ input output requests member
         request inList)
   · rw [(PMF.apply_eq_zero_iff _ _).mpr member, zero_mul, zero_mul]
+
+/-! ### The two simulated second stages of the second oracle hop -/
+
+/-- The simulated second stage on the view programmed at every used label. -/
+def usedSimulatedStageTwo [FieldCertificate] [GroupCertificate] (adversary : Adversary)
+    (parameter : Nat) (auxiliary : Unit) (circuit : Garbling.Public) (input : AffineInput)
+    (output : Option Point) (advState : adversary.State) (key : InputMacKey)
+    (values : FixedKeyIndex → Block) (view : View) (priorLog : List Query)
+    (carrier : NonZeroBase) : PMF (Bool × List Query) :=
+  simulatedStageTwo adversary parameter auxiliary circuit input output advState
+    (stageTwoState (programIndices (usedPrograms key values) view.1, view.2) priorLog circuit.1
+      carrier key)
+
+/-- The simulated second stage on the view programmed at the selected labels only. -/
+def selectedSimulatedStageTwo [FieldCertificate] [GroupCertificate] (adversary : Adversary)
+    (parameter : Nat) (auxiliary : Unit) (circuit : Garbling.Public) (input : AffineInput)
+    (output : Option Point) (advState : adversary.State) (outputs : GateValues BaseField)
+    (fibers : GateValues (BitVec 384)) (state : State) : PMF (Bool × List Query) :=
+  simulatedStageTwo adversary parameter auxiliary circuit input output advState
+    (programSelected state input outputs fibers)
+
+/-- Programming the selected labels of a second-stage state is again a second-stage state. -/
+theorem programSelected_stageTwoState (view : View) (priorLog : List Query)
+    (table : CurveMembership.Table) (carrier : NonZeroBase) (key : InputMacKey)
+    (input : AffineInput) (outputs : GateValues BaseField) (fibers : GateValues (BitVec 384)) :
+    programSelected (stageTwoState view priorLog table carrier key) input outputs fibers =
+      stageTwoState (programIndices (selectedPrograms key input outputs (tableRow table) fibers)
+        view.1, view.2) priorLog table carrier key := rfl
+
+/-- The simulated second stage on the selected programming never reads the labels the input
+leaves unselected. -/
+theorem selectedSimulatedStageTwo_unread [FieldCertificate] [GroupCertificate]
+    (adversary : Adversary) (parameter : Nat) (auxiliary : Unit) (circuit : Garbling.Public)
+    (input : AffineInput) (output : Option Point) (advState : adversary.State)
+    (outputs : GateValues BaseField) (fibers : GateValues (BitVec 384)) (view : View)
+    (priorLog : List Query) (table : CurveMembership.Table) (carrier : NonZeroBase)
+    (key : InputMacKey) (blocks : LabelIndex → Block) :
+    selectedSimulatedStageTwo adversary parameter auxiliary circuit input output advState outputs
+        fibers (stageTwoState view priorLog table carrier
+          (setKeyLabels key (unreadLabelBits input) blocks)) =
+      selectedSimulatedStageTwo adversary parameter auxiliary circuit input output advState
+        outputs fibers (stageTwoState view priorLog table carrier key) := by
+  unfold selectedSimulatedStageTwo
+  rw [programSelected_stageTwoState, programSelected_stageTwoState, selectedPrograms_setKeyLabels]
+  exact simulatedStageTwo_unread adversary parameter auxiliary circuit input output advState
+    (programIndices (selectedPrograms key input outputs (tableRow table) fibers) view.1, view.2)
+    priorLog table carrier key blocks
+
+/-- The log of the simulated second stage is the first stage's log plus the second budget. -/
+theorem simulatedStageTwo_length [FieldCertificate] [GroupCertificate] (adversary : Adversary)
+    (parameter : Nat) (auxiliary : Unit) (circuit : Garbling.Public) (input : AffineInput)
+    (output : Option Point) (advState : adversary.State) (state : State)
+    (outcome : Bool × List Query)
+    (member : outcome ∈ (simulatedStageTwo adversary parameter auxiliary circuit input output
+      advState state).support) :
+    outcome.2.length ≤ state.log.length + adversary.secondQueryBudget parameter := by
+  rw [simulatedStageTwo_eq, PMF.support_bind] at member
+  simp only [Set.mem_iUnion] at member
+  obtain ⟨requests, _, member⟩ := member
+  rw [PMF.support_map] at member
+  obtain ⟨result, resultMember, rfl⟩ := member
+  have bound := run_idealOracle_log_length _ _ result resultMember
+  rw [programAll_log] at bound
+  exact bound
+
+/-- At an index whose slot reads the selected label, the two views of the second oracle hop
+are the same permutation, so the steering cannot tell them apart. -/
+theorem programIndices_selected_congr (oracle : PermutationOracle FixedKeyIndex Block)
+    (key : InputMacKey) (input : AffineInput) (bridgeKey mask r1 r2 : BaseField)
+    (digests : GateValues (BitVec 384)) (pads : GateValues BitAdaptor.Ciphertext)
+    (index : FixedKeyIndex)
+    (selected : slotBit index.slot = inputBits input index.adaptor index.position) :
+    (programIndices (usedPrograms key (freshValue digests pads)) oracle).permutation index =
+      (programIndices (selectedPrograms key input
+        (encodeCoordinates input (digestedRaw mask r1 r2 digests pads)).hash
+        (tableRow (Coordinates.table bridgeKey key (digestedRaw mask r1 r2 digests pads)))
+        digests) oracle).permutation index :=
+  programIndices_congr_at _ _ oracle index
+    (selectedPrograms_selected key input bridgeKey mask r1 r2 digests pads index selected).symm
+
+/-- Off the bad label values of the whole log, the simulated second stage cannot tell the
+first hop's programming at every used label from the reference game's programming at the
+selected labels only. -/
+theorem usedSimulatedStageTwo_agree [FieldCertificate] [GroupCertificate] (adversary : Adversary)
+    (parameter : Nat) (auxiliary : Unit) (circuit : Garbling.Public) (input : AffineInput)
+    (output : Option Point) (advState : adversary.State)
+    (oracle : PermutationOracle FixedKeyIndex Block)
+    (rest : PermutationOracle Garbling.EncIndex Block × (BaseField → Block × Block))
+    (priorLog : List Query) (carrier : NonZeroBase) (key : InputMacKey)
+    (bridgeKey mask r1 r2 : BaseField) (digests : GateValues (BitVec 384))
+    (pads : GateValues BitAdaptor.Ciphertext)
+    (tableSame : circuit.1 =
+      Coordinates.table bridgeKey key (digestedRaw mask r1 r2 digests pads))
+    (result : Bool) (log : List Query)
+    (good : ∀ query ∈ log,
+      ¬ SelectedBad oracle (freshValue digests pads) key input query) :
+    usedSimulatedStageTwo adversary parameter auxiliary circuit input output advState key
+        (freshValue digests pads) (oracle, rest) priorLog carrier (result, log) =
+      selectedSimulatedStageTwo adversary parameter auxiliary circuit input output advState
+        (encodeCoordinates input (digestedRaw mask r1 r2 digests pads)).hash digests
+        (stageTwoState (oracle, rest) priorLog circuit.1 carrier key) (result, log) := by
+  unfold usedSimulatedStageTwo selectedSimulatedStageTwo
+  rw [programSelected_stageTwoState,
+    show tableRow circuit.1 =
+      tableRow (Coordinates.table bridgeKey key (digestedRaw mask r1 r2 digests pads)) from
+    congrArg tableRow tableSame]
+  exact simulatedStageTwo_agree adversary parameter auxiliary circuit input output advState _ _
+    rest priorLog carrier key (SelectedBad oracle (freshValue digests pads) key input)
+    (fun index selected => programIndices_selected_congr oracle key input bridgeKey mask r1 r2
+      digests pads index selected)
+    (fun query notBad => publicAnswer_selectedPrograms oracle rest key input bridgeKey mask r1 r2
+      digests pads query notBad)
+    result log good
+
+/-! ### The simulated game in two-stage shape -/
+
+/-- A simulated-shaped game: the first stage runs on `firstView`, the second stage on
+`secondView` with the simulator's labels and steering. -/
+def simulatedTwoStage [FieldCertificate] [GroupCertificate] (adversary : Adversary)
+    (parameter : Nat) (auxiliary : Unit) (scalar : NonZeroScalar) (circuit : Garbling.Public)
+    (carrier : NonZeroBase) (key : InputMacKey) (firstView secondView : View) : PMF Bool :=
+  (loggedFirstStage adversary parameter auxiliary circuit firstView).bind fun outcome =>
+    (simulatedStageTwo adversary parameter auxiliary circuit outcome.1.1
+      (checkedScalarMultiplication scalar.value outcome.1.1) outcome.1.2
+      (stageTwoState secondView outcome.2 circuit.1 carrier key)).map Prod.fst
+
+/-- One round of the simulated game on explicit coordinates: the table is garbled on the
+view's own fixed-key oracle and both stages run on that view. -/
+def simulatedOn [FieldCertificate] [GroupCertificate] (adversary : Adversary) (parameter : Nat)
+    (auxiliary : Unit) (scalar : NonZeroScalar) (bridgeKey mask r1 r2 : BaseField)
+    (carrier : NonZeroBase) (key : InputMacKey) (view : View) : PMF Bool :=
+  simulatedTwoStage adversary parameter auxiliary scalar
+    (CurveMembership.garble bridgeKey mask r1 r2 (curveOracles view.1) key, carrierBits carrier)
+    carrier key view view
+
+/-- The simulated game is one round of `simulatedOn` on a uniform tape and carrier. -/
+theorem simulatedGame_eq_simulatedOn [FieldCertificate] [GroupCertificate]
+    (adversary : Adversary) (parameter : Nat) (scalar : NonZeroScalar) (auxiliary : Unit) :
+    idealGame Garbling.garbledCircuit (fun _ => ciphertextBytes) simulator idealOracle adversary
+        parameter scalar auxiliary =
+      (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+        (PMF.uniformOfFintype NonZeroBase).bind fun carrier =>
+          simulatedOn adversary parameter auxiliary scalar tape.bridgeKey.value
+            tape.curveMask.value tape.curveR1 tape.curveR2 carrier tape.inputMacKey
+            (Garbling.evaluationOracle tape) := by
+  rw [simulatedGame_eq]
+  refine congrArg (PMF.bind _) (funext fun tape => ?_)
+  refine congrArg (PMF.bind _) (funext fun carrier => ?_)
+  have conditioned : (((adversary.chooseInput parameter (curveTable tape, carrierBits carrier)
+        auxiliary).run idealOracle (initialState tape (curveTable tape) carrier)).bind
+      fun selected => (simulatedStageTwo adversary parameter auxiliary
+        (curveTable tape, carrierBits carrier) selected.1.1
+        (checkedScalarMultiplication scalar.value selected.1.1) selected.1.2
+        selected.2).map Prod.fst) =
+      (((adversary.chooseInput parameter (curveTable tape, carrierBits carrier)
+        auxiliary).run idealOracle (initialState tape (curveTable tape) carrier)).bind
+      fun selected => (simulatedStageTwo adversary parameter auxiliary
+        (curveTable tape, carrierBits carrier) selected.1.1
+        (checkedScalarMultiplication scalar.value selected.1.1) selected.1.2
+        (stageTwoState (Garbling.evaluationOracle tape) selected.2.log (curveTable tape)
+          carrier tape.inputMacKey)).map Prod.fst) := by
+    refine bind_congr_support fun selected member => ?_
+    obtain ⟨sameView, sameTable, sameCarrier, sameKey⟩ :=
+      run_idealOracle_support _ _ selected member
+    rw [← eq_stageTwoState (Garbling.evaluationOracle tape) (curveTable tape) carrier
+      tape.inputMacKey selected.2 sameView sameTable sameCarrier sameKey]
+  have circuitEq : (CurveMembership.garble tape.bridgeKey.value tape.curveMask.value
+      tape.curveR1 tape.curveR2 (curveOracles (Garbling.evaluationOracle tape).1)
+      tape.inputMacKey, carrierBits carrier) = (curveTable tape, carrierBits carrier) := rfl
+  rw [conditioned]
+  unfold simulatedOn simulatedTwoStage
+  rw [circuitEq, ← map_loggedOutcome_firstState adversary parameter auxiliary
+    (curveTable tape, carrierBits carrier) (Garbling.evaluationOracle tape) (curveTable tape)
+    carrier tape.inputMacKey, PMF.bind_map]
+  rfl
+
+/-- The simulated game with the bridge key, the label key, the fixed-key oracle and the
+curve coordinates sampled separately from the rest of the tape. -/
+theorem simulatedGame_eq_split [FieldCertificate] [GroupCertificate] (adversary : Adversary)
+    (parameter : Nat) (scalar : NonZeroScalar) (auxiliary : Unit) :
+    idealGame Garbling.garbledCircuit (fun _ => ciphertextBytes) simulator idealOracle adversary
+        parameter scalar auxiliary =
+      (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+        (PMF.uniformOfFintype NonZeroBase).bind fun bridgeKey =>
+          (PMF.uniformOfFintype InputMacKey).bind fun key =>
+            (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+              (PMF.uniformOfFintype (NonZeroBase × BaseField × BaseField)).bind fun curve =>
+                (PMF.uniformOfFintype NonZeroBase).bind fun carrier =>
+                  simulatedOn adversary parameter auxiliary scalar bridgeKey.value
+                    curve.1.value curve.2.1 curve.2.2 carrier key
+                    (oracle, tape.encOracle, tape.hashOracle) := by
+  rw [simulatedGame_eq_simulatedOn, ← uniform_bind_setCurve, ← uniform_bind_setOracle,
+    ← uniform_bind_setKey, ← uniform_bind_setBridge]
+  rfl
+
+/-- The S side after the first hop: the oracle is programmed at every used label to the
+fresh value of that slot, and the released table is the reference table of the fresh
+per-gate digests and pads. -/
+def simulatedFresh [FieldCertificate] [GroupCertificate] (adversary : Adversary)
+    (parameter : Nat) (auxiliary : Unit) (scalar : NonZeroScalar) (bridgeKey : BaseField)
+    (carrier : NonZeroBase) (key : InputMacKey)
+    (rest : PermutationOracle Garbling.EncIndex Block × (BaseField → Block × Block))
+    (oracle : PermutationOracle FixedKeyIndex Block) (mask r1 r2 : BaseField)
+    (secrets : GateValues (BitVec 384) × GateValues BitAdaptor.Ciphertext) : PMF Bool :=
+  simulatedTwoStage adversary parameter auxiliary scalar
+    (Coordinates.table bridgeKey key ⟨mask, r1, r2, digestField secrets.1, secrets.2⟩,
+      carrierBits carrier) carrier key
+    (programIndices (usedPrograms key (freshValue secrets.1 secrets.2)) oracle, rest)
+    (programIndices (usedPrograms key (freshValue secrets.1 secrets.2)) oracle, rest)
+
+/-- Step 4 of the chain, exact: the simulated game is the reparametrised game. -/
+theorem simulatedGame_eq_fresh [FieldCertificate] [GroupCertificate] (adversary : Adversary)
+    (parameter : Nat) (scalar : NonZeroScalar) (auxiliary : Unit) :
+    idealGame Garbling.garbledCircuit (fun _ => ciphertextBytes) simulator idealOracle adversary
+        parameter scalar auxiliary =
+      (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+        (PMF.uniformOfFintype NonZeroBase).bind fun bridgeKey =>
+          (PMF.uniformOfFintype InputMacKey).bind fun key =>
+            (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+              (PMF.uniformOfFintype (GateValues (BitVec 384) ×
+                  GateValues BitAdaptor.Ciphertext)).bind fun secrets =>
+                (PMF.uniformOfFintype (NonZeroBase × BaseField × BaseField)).bind fun curve =>
+                  (PMF.uniformOfFintype NonZeroBase).bind fun carrier =>
+                    simulatedFresh adversary parameter auxiliary scalar bridgeKey.value carrier
+                      key (tape.encOracle, tape.hashOracle) oracle curve.1.value curve.2.1
+                      curve.2.2 secrets := by
+  rw [simulatedGame_eq_split]
+  refine congrArg (PMF.bind _) (funext fun tape => ?_)
+  refine congrArg (PMF.bind _) (funext fun bridgeKey => ?_)
+  refine congrArg (PMF.bind _) (funext fun key => ?_)
+  rw [← uniform_bind_usedPrograms key]
+  refine congrArg (PMF.bind _) (funext fun oracle => ?_)
+  refine congrArg (PMF.bind _) (funext fun secrets => ?_)
+  refine congrArg (PMF.bind _) (funext fun curve => ?_)
+  refine congrArg (PMF.bind _) (funext fun carrier => ?_)
+  unfold simulatedOn simulatedFresh
+  rw [show (curveOracles ((programFamily (usedLabel key)
+        (oracle, freshOfSecrets key secrets.1 secrets.2)).1, tape.encOracle, tape.hashOracle).1) =
+      curveOracles (programFamily (usedLabel key)
+        (oracle, freshOfSecrets key secrets.1 secrets.2)).1 from rfl,
+    curveGarble_programFamily, freshHash_freshOfSecrets, freshPad_freshOfSecrets,
+    programFamily_eq_programIndices]
