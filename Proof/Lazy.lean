@@ -357,6 +357,146 @@ theorem compatibleSplit_snd (assign : Assignment) (injective : AssignmentInjecti
     (compatibleSplit assign injective input fresh base baseFresh permutation).2.1 =
       permutation.1 input := rfl
 
+/-! ### The transposed assignment -/
+
+open Classical in
+/-- The input a transcript pins to a value. -/
+def pinnedInput (assign : Assignment) (value : Block) : Option Block :=
+  if pinned : ∃ input, assign input = some value then some pinned.choose else none
+
+theorem pinnedInput_eq_some_iff (assign : Assignment) (injective : AssignmentInjective assign)
+    (value input : Block) : pinnedInput assign value = some input ↔ assign input = some value := by
+  classical
+  constructor
+  · intro transposed
+    by_cases pinned : ∃ other, assign other = some value
+    · rw [pinnedInput, dif_pos pinned] at transposed
+      rw [← Option.some.inj transposed]
+      exact pinned.choose_spec
+    · rw [pinnedInput, dif_neg pinned] at transposed
+      exact absurd transposed (by simp)
+  · intro pin
+    have pinned : ∃ other, assign other = some value := ⟨input, pin⟩
+    rw [pinnedInput, dif_pos pinned]
+    exact congrArg some (injective pinned.choose input value pinned.choose_spec pin)
+
+theorem pinnedInput_eq_none (assign : Assignment) (injective : AssignmentInjective assign)
+    (value : Block) (fresh : value ∉ pinnedRange assign) : pinnedInput assign value = none := by
+  cases transposed : pinnedInput assign value with
+  | none => rfl
+  | some input =>
+    exact absurd (mem_pinnedRange ((pinnedInput_eq_some_iff assign injective value input).mp
+      transposed)) fresh
+
+theorem pinnedInput_injective (assign : Assignment) (injective : AssignmentInjective assign) :
+    AssignmentInjective (pinnedInput assign) := by
+  intro first second input firstPin secondPin
+  exact Option.some.inj
+    (((pinnedInput_eq_some_iff assign injective first input).mp firstPin).symm.trans
+      ((pinnedInput_eq_some_iff assign injective second input).mp secondPin))
+
+theorem notMem_pinnedRange_pinnedInput (assign : Assignment)
+    (injective : AssignmentInjective assign) (input : Block) :
+    input ∉ pinnedRange (pinnedInput assign) ↔ assign input = none := by
+  constructor
+  · intro fresh
+    cases pin : assign input with
+    | none => rfl
+    | some value =>
+      exact absurd ⟨value, (pinnedInput_eq_some_iff assign injective value input).mpr pin⟩ fresh
+  · rintro fresh ⟨value, transposed⟩
+    rw [(pinnedInput_eq_some_iff assign injective value input).mp transposed] at fresh
+    exact absurd fresh (by simp)
+
+/-- A permutation is compatible with the transposed assignment exactly when its inverse
+is compatible with the assignment. -/
+theorem compatible_pinnedInput_iff (assign : Assignment) (injective : AssignmentInjective assign)
+    (permutation : Equiv Block Block) :
+    Compatible (pinnedInput assign) permutation ↔ Compatible assign permutation.symm := by
+  constructor
+  · intro compatible input value pin
+    have transposed := (pinnedInput_eq_some_iff assign injective value input).mpr pin
+    rw [← compatible value input transposed]
+    exact permutation.symm_apply_apply value
+  · intro compatible value input transposed
+    have pin := (pinnedInput_eq_some_iff assign injective value input).mp transposed
+    rw [← compatible input value pin]
+    exact permutation.apply_symm_apply input
+
+/-- Inverting a permutation matches the two compatibility conditions. -/
+def compatibleSymm (assign : Assignment) (injective : AssignmentInjective assign) :
+    {permutation : Equiv Block Block // Compatible (pinnedInput assign) permutation} ≃
+      {permutation : Equiv Block Block // Compatible assign permutation} where
+  toFun permutation :=
+    ⟨permutation.1.symm, (compatible_pinnedInput_iff assign injective permutation.1).mp
+      permutation.2⟩
+  invFun permutation :=
+    ⟨permutation.1.symm, (compatible_pinnedInput_iff assign injective permutation.1.symm).mpr
+      (by rw [Equiv.symm_symm]; exact permutation.2)⟩
+  left_inv permutation := Subtype.ext (Equiv.symm_symm permutation.1)
+  right_inv permutation := Subtype.ext (Equiv.symm_symm permutation.1)
+
+/-- A uniform choice out of two equal subtypes is the same law. -/
+theorem uniform_map_val_congr {Value : Type} {predicate otherPredicate : Value → Prop}
+    [Fintype {value // predicate value}] [Nonempty {value // predicate value}]
+    [Fintype {value // otherPredicate value}] [Nonempty {value // otherPredicate value}]
+    (same : ∀ value, predicate value ↔ otherPredicate value) :
+    (PMF.uniformOfFintype {value // predicate value}).map Subtype.val =
+      (PMF.uniformOfFintype {value // otherPredicate value}).map Subtype.val := by
+  have transported := uniformOfFintype_bind_of_equiv (Equiv.subtypeEquivRight same)
+    (fun value => PMF.pure value.1)
+  rw [PMF.map, PMF.map, Function.comp_def, Function.comp_def]
+  exact transported
+
+/-- Reading a compatible permutation is reading the inverse of a transposed one. -/
+theorem compatibleLaw_bind_symm {Result : Type} (assign : Assignment)
+    (injective : AssignmentInjective assign) (continuation : Equiv Block Block → PMF Result) :
+    (compatibleLaw assign).bind continuation =
+      (compatibleLaw (pinnedInput assign)).bind fun permutation =>
+        continuation permutation.symm := by
+  haveI forwardNonempty := nonempty_compatible assign injective
+  haveI inverseNonempty :=
+    nonempty_compatible (pinnedInput assign) (pinnedInput_injective assign injective)
+  rw [compatibleLaw_eq assign forwardNonempty,
+    compatibleLaw_eq (pinnedInput assign) inverseNonempty, uniform_map_val_bind,
+    uniform_map_val_bind]
+  exact (uniformOfFintype_bind_of_equiv (compatibleSymm assign injective)
+    (fun permutation => continuation permutation.1)).symm
+
+/-- Pinning a free input to a free value transposes to pinning that value to that input. -/
+theorem pinnedInput_update (assign : Assignment) (injective : AssignmentInjective assign)
+    (input value : Block) (freshInput : assign input = none)
+    (freshValue : value ∉ pinnedRange assign) :
+    pinnedInput (Function.update assign input (some value)) =
+      Function.update (pinnedInput assign) value (some input) := by
+  have updated := update_injective assign injective input value freshValue
+  funext other
+  refine Option.ext fun point => ?_
+  show pinnedInput (Function.update assign input (some value)) other = some point ↔
+    Function.update (pinnedInput assign) value (some input) other = some point
+  rw [pinnedInput_eq_some_iff _ updated]
+  by_cases sameValue : other = value
+  · subst sameValue
+    rw [Function.update_self]
+    constructor
+    · intro pin
+      by_cases samePoint : point = input
+      · rw [samePoint]
+      · rw [Function.update_of_ne samePoint] at pin
+        exact absurd (mem_pinnedRange pin) freshValue
+    · intro pin
+      rw [Option.some.inj pin, Function.update_self]
+  · rw [Function.update_of_ne sameValue, pinnedInput_eq_some_iff _ injective]
+    by_cases samePoint : point = input
+    · subst samePoint
+      rw [Function.update_self, freshInput]
+      constructor
+      · intro pin
+        exact absurd (Option.some.inj pin).symm sameValue
+      · intro pin
+        exact absurd pin (by simp)
+    · rw [Function.update_of_ne samePoint]
+
 /-! ### The forward marginalisation -/
 
 /-- Reading a uniform compatible permutation at an unpinned input is the same as drawing the
@@ -414,6 +554,57 @@ theorem compatibleLaw_forward {Result : Type} (assign : Assignment)
   refine congrArg (PMF.bind _) (funext fun value => ?_)
   exact uniformOfFintype_bind_of_equiv (repin assign input base.1 value.1 fresh base.2 value.2)
     (fun permutation => continuation value.1 permutation.1)
+
+/-! ### The inverse marginalisation -/
+
+/-- The fresh inverse answers of an assignment are the fresh forward answers of its transpose. -/
+theorem freshValueLaw_pinnedInput (assign : Assignment) (injective : AssignmentInjective assign)
+    (nonempty : Nonempty {input : Block // assign input = none}) :
+    freshValueLaw (pinnedInput assign) = freshInputLaw assign := by
+  have witness := Classical.choice nonempty
+  haveI transposedNonempty :
+      Nonempty {value : Block // value ∉ pinnedRange (pinnedInput assign)} :=
+    ⟨⟨witness.1, (notMem_pinnedRange_pinnedInput assign injective witness.1).mpr witness.2⟩⟩
+  rw [freshValueLaw_eq _ transposedNonempty, freshInputLaw_eq assign nonempty]
+  exact uniform_map_val_congr (notMem_pinnedRange_pinnedInput assign injective)
+
+theorem freshInputLaw_support (assign : Assignment)
+    (nonempty : Nonempty {input : Block // assign input = none}) {input : Block}
+    (member : input ∈ (freshInputLaw assign).support) : assign input = none := by
+  rw [freshInputLaw_eq assign nonempty, PMF.support_map] at member
+  obtain ⟨witness, _, rfl⟩ := member
+  exact witness.2
+
+/-- Inverting a uniform compatible permutation at an unpinned value is the same as drawing the
+preimage uniformly from the unpinned inputs first and conditioning the permutation on it. -/
+theorem compatibleLaw_inverse {Result : Type} (assign : Assignment)
+    (injective : AssignmentInjective assign) (value : Block) (fresh : value ∉ pinnedRange assign)
+    (continuation : Block → Equiv Block Block → PMF Result) :
+    ((compatibleLaw assign).bind fun permutation =>
+        continuation (permutation.symm value) permutation) =
+      (freshInputLaw assign).bind fun input =>
+        (compatibleLaw (Function.update assign input (some value))).bind fun permutation =>
+          continuation input permutation := by
+  haveI unpinned := unpinned_nonempty assign injective value fresh
+  have transposedInjective := pinnedInput_injective assign injective
+  have step : ((compatibleLaw assign).bind fun permutation =>
+        continuation (permutation.symm value) permutation) =
+      (compatibleLaw (pinnedInput assign)).bind fun permutation =>
+        continuation (permutation value) permutation.symm := by
+    rw [compatibleLaw_bind_symm assign injective
+      (fun permutation => continuation (permutation.symm value) permutation)]
+    refine congrArg (PMF.bind _) (funext fun permutation => ?_)
+    rw [Equiv.symm_symm]
+  rw [step, compatibleLaw_forward (pinnedInput assign) transposedInjective value
+      (pinnedInput_eq_none assign injective value fresh)
+      (fun answer permutation => continuation answer permutation.symm),
+    freshValueLaw_pinnedInput assign injective unpinned]
+  refine bind_congr_support fun input member => ?_
+  rw [← pinnedInput_update assign injective input value
+    (freshInputLaw_support assign unpinned member) fresh]
+  exact (compatibleLaw_bind_symm (Function.update assign input (some value))
+    (update_injective assign injective input value fresh)
+    (fun permutation => continuation input permutation)).symm
 
 end
 
