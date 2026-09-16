@@ -17,10 +17,11 @@ the mask law and the hash fiber law) and the structural core of P7
 steering is the shift at `(x7, 0)`, and the double programming is the reference programming on a
 reparametrised permutation). Nothing in step 7 contradicted the chain.
 
-Slice 3f closed **all of P6** (`Proof/Product.lean` + `Proof/GateProduct.lean`: the tensorisation)
-and **all of P7** (`Proof/GateProduct.lean`: the fiber marginal; `Proof/FreshBridge.lean`: the
-`programAll` → `programIndices` bridge). The remaining machinery item is P3's stage-2 half; the
-rest is assembly (P9b + P10). Nothing in the tensorisation or the bridge contradicted the chain,
+Slice 3f closed **all of P6** (`Proof/Product.lean` + `Proof/GateProduct.lean`: the tensorisation),
+**all of P7** (`Proof/GateProduct.lean`: the fiber marginal; `Proof/FreshBridge.lean`: the
+`programAll` → `programIndices` bridge) and **all of P3** (`Proof/SecondStage.lean`: the stage-2
+bound). **Every machinery item of the chain is now machine-checked; only the assembly (P9b + P10)
+is open.** Nothing in the tensorisation, the bridge or the stage-2 bound contradicted the chain,
 and no constant moved.
 
 ## 1. The correction that drives the architecture
@@ -222,6 +223,16 @@ instead of the whole key; `uniform_bind_setKeyLabel` / `uniform_keyLabel_mem` ar
   needs (i) every request fresh against the log the steering sees, which is the bad event of the
   hop, and (ii) the requests to sit at **distinct indices**, which is a closed fact about the
   three hash slots / two pad slots (`steerRequests_distinct`), not a probabilistic one.
+* **The stage-2 bound must defer the unread labels as one family, not one gate at a time.** The
+  bad event is "some log entry hits the hidden set of **its own** gate's unselected label", so the
+  union bound costs one label set per log **entry** (`k q / 2^128`). Bounding one gate at a time
+  and summing over gates would cost `1270 k q / 2^128` and blow the budget. `setKeyLabels`
+  replaces the selected label of every gate at once, so after the deferral each entry reads one
+  coordinate of a uniform family (`map_labels_uniform`) — the accounting of §4 is unchanged.
+  `secondStage_hidden_le`'s `unread` hypothesis (`game (setKeyLabels key values labels) = game
+  key`) is what P9b must discharge for the two games: the released table ignores the label key
+  (the secret oracles do not read labels), stage 1 never touches the key, and stage 2 sees only
+  `Lamport.selectedLabels` and the programming at `selectedLabel`, all at the selected bit.
 * `steerTo_eq_map` writes the `true` branch of the steering as a fiber sample it ignores
   (`PMF.map_const`), so both branches have the reference game's shape "sample a fiber, then
   program". P10 can therefore treat the two branches uniformly.
@@ -237,7 +248,7 @@ probability exactly `k/2^128`).
 |---|---|---|---|
 | P1 | programming involution `(π, r) ↦ (π programmed at ℓ to r, π ℓ)`; uniform `π` = uniform `π°` programmed at fresh uniform `r`; family version over `FixedKeyIndex` | `Proof/Programming.lean`: `programAt`, `programAtEquiv`, `uniform_programAt`, `programFamily`, `uniform_programFamily` | **done** |
 | P2 | deterministic identical-until-bad for logged runs: same log, views agreeing off `bad` ⇒ same `(result, log)` law on good logs; bind form of `identical_until_bad`; log monotone, log length ≤ initial + budget | `Proof/Logged.lean`: `run_idealOracle_agree`, `bind_identical_until_bad`, `run_idealOracle_log_mono`, `run_idealOracle_log_length` | **done** |
-| P3 | independence bad-bounds: union bound over a log (`hidden_label_bound`); one label of a uniform key is a uniform block (`setKeyLabel` involution, `map_keyLabel_uniform`, `uniform_keyLabel_mem`); hidden sets of one programmed permutation, 2 per direction (`forwardHidden`, `inverseHidden`, `hiddenLabels_card`, `publicAnswer_programIndices_single`); stage-1 bound with the key sampled up front (`firstStage_key_deferred`, `firstStage_hidden_le`) | `Proof/Hidden.lean` | **stage 1 done**; stage-2 (unselected-label) bound open |
+| P3 | independence bad-bounds: union bound over a log (`hidden_label_bound`); one label of a uniform key is a uniform block (`setKeyLabel` involution, `map_keyLabel_uniform`, `uniform_keyLabel_mem`); hidden sets of one programmed permutation, 2 per direction (`forwardHidden`, `inverseHidden`, `hiddenLabels_card`, `publicAnswer_programIndices_single`); stage-1 bound with the key sampled up front (`firstStage_key_deferred`, `firstStage_hidden_le`); stage-2 bound with the key read only through the selected labels: replacing one label of **every** gate at once is an involution of the key (`setKeyLabels`, `keyLabels`, `swapKeyLabels`, `uniform_bind_setKeyLabels`), one label of a uniform family is a uniform block (`uniform_bind_update_labels`, `map_labels_uniform`, `uniform_labels_mem`), and `secondStage_hidden_le` deferres the whole unread family so the union bound runs over the log entries | `Proof/Hidden.lean`, `Proof/SecondStage.lean` | **done** |
 | P4 | static bijection raw ↔ middle; `c0` affine in `mask`; visible law uniform off-curve, shift law on-curve | `Proof/Reference.lean`: `middleEquiv`, `Coordinates.table_c0_eq`, `visibleCoordinates_offCurve`, `visibleCoordinates_onCurve` | **done** |
 | P5 | deferred sampling: transfer form `twoStageGame_congr` (equal joint laws of `(view, rest r)` per first-stage result ⇒ equal games) and factored form `twoStageGame_eq_deferredGame`; both by `tsum_map_mul` + `ENNReal.tsum_comm` | `Proof/Deferred.lean`: `twoStageGame`, `deferredGame`, `twoStageGame_apply`, `twoStageGame_congr`, `twoStageGame_eq_deferredGame`, `map_view_of_joint` | **done** |
 | P6 | TV facts: total difference `∑ |law₁ − law₂|` with triangle inequality and both bind sub-additivities (`bind_apply_sub_le` swaps the sampled law, `bind_apply_sub_le_of_le` swaps the continuation); `U(F*)` vs `U(F)` total difference `2/p`; one 384-bit digest vs (`U(F)` then `uniformHashFiber`) total difference `≤ p/2^384` (fiber sizes are within one residue block of `2^384/p`, by the two injections `fiberElement`/`fiberIndex`); **tensorisation**: the law of independent coordinates on a finite function type, its uniform / bind / one-coordinate-resampling laws, the uniform law of a coordinatewise subtype as a product, and `totalDifference (⊗ first) (⊗ second) ≤ ∑ coordinates`; instantiated at the 1270 gates: `1270 · p/2^384` for the whole digest family | `Proof/Distance.lean`: `totalDifference`, `totalDifference_triangle`, `bind_apply_sub_le`, `bind_apply_sub_le_of_le`, `mask_total_difference`, `card_hashFiber_lower`/`_upper`, `count_mul_difference_le`, `hashFiber_total_difference`; `Proof/Product.lean`: `productPMF`, `productPMF_apply`, `uniformOfFintype_pi`, `productPMF_bind`, `productPMF_bind_update`, `uniform_subtypePi_map_val`, `totalDifference_productPMF_update`, `totalDifference_productPMF`, `map_equiv_apply`, `uniformOfFintype_map_bijection`, `totalDifference_map_bijection`; `Proof/GateProduct.lean`: `Gate`, `gateCurry`, `gateProduct`, `card_gate`, `uniformOfFintype_gateValues`, `uniformHashFibers_eq_gateProduct`, `hashFibers_total_difference` | **done** |
@@ -247,7 +258,8 @@ probability exactly `k/2^128`).
 | P9b | unfold `idealGame` for `hybridSimulator` and `simulator` into the shape of §4 (as `hybridGame_eq_core` does), marginalize unused tape fields (`uniform_bind_setBridge` pattern) | `Proof/Privacy.lean` has the hybrid half | open |
 | P10 | assemble §4 with `advantageTriangle` / `event_difference_le` and P8 | — | open |
 
-Dependencies: P9a needs P4's definitions; P3 needs P2 (log length) and P9a; P5 needs P4; P7 needs
+Dependencies: P9a needs P4's definitions; P3's stage-1 half needs P2 (log length) and P9a, its
+stage-2 half needs P6's product laws (`Proof/SecondStage.lean` imports `Proof/Product.lean`); P5 needs P4; P7 needs
 P1 and P9a; P10 needs everything. Slice 3d also added `Adversary`/`Selected` abbreviations,
 `firstState`/`loggedFirstStage` (the stage-1 run in logged, key-free form; `map_loggedOutcome_congr`
 shows a logged run depends only on the view and the initial log) and `slotBit`/`queryIndex`. Generic helpers are in `Proof/Uniform.lean`
