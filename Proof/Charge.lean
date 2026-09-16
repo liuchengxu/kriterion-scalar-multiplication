@@ -378,6 +378,34 @@ theorem steeredReleasedStageTwo_double [FieldCertificate] [GroupCertificate]
     (fiberValues_of_mem_uniformHashFibers _ fibers member) onCurve (fresh fibers member),
     PMF.map_bind]
 
+/-- The two second stages agree at every outcome whose log avoids the hidden queries. This
+is the identical-until-bad statement of the steering hop: what is left of step 7 is the mass
+of the logs that do not avoid them, plus the mass of the steering requests that are not
+fresh. -/
+theorem hybridStageTwo_doubled_agree (adversary : Adversary) (parameter : Nat)
+    (auxiliary : Unit) (circuit : Garbling.Public) (input : AffineInput)
+    (advState : adversary.State) (key : InputMacKey) (outputs : GateValues BaseField)
+    (rows : GateValues BitAdaptor.Ciphertext) (fibers : GateValues (BitVec 384))
+    (wanted : BaseField) (hash : BitVec 384) (view : View) (priorLog : List Query)
+    (table : CurveMembership.Table) (carrier : NonZeroBase) (result : Bool) (log : List Query)
+    (good : ∀ query ∈ log, ¬ doubledHidden view.1
+      (selectedPrograms key input outputs rows fibers)
+      (steerPrograms key input wanted hash (rows .x7 0)) query) :
+    hybridStageTwo adversary parameter auxiliary circuit input advState
+        (stageTwoState (doubleSteeredOracle key input outputs rows fibers wanted hash view.1,
+          view.2) priorLog table carrier key) (result, log) =
+      hybridStageTwo adversary parameter auxiliary circuit input advState
+        (stageTwoState (shiftedOracle key input outputs rows fibers wanted hash view.1, view.2)
+          priorLog table carrier key) (result, log) := by
+  refine run_idealOracle_agree _ _
+    (stageTwoState (doubleSteeredOracle key input outputs rows fibers wanted hash view.1, view.2)
+      priorLog table carrier key)
+    (stageTwoState (shiftedOracle key input outputs rows fibers wanted hash view.1, view.2)
+      priorLog table carrier key)
+    rfl (fun query goodQuery => ?_) result log good
+  exact publicAnswer_steeringDouble key input outputs rows fibers wanted hash view.2 view.1 query
+    goodQuery
+
 end
 
 end Kriterion.ArgoMAC.Security
