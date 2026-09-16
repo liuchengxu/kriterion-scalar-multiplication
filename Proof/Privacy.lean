@@ -232,7 +232,7 @@ theorem hybridGame_eq [FieldCertificate] [GroupCertificate]
               (curveTable (setBridge tape ((mulScalar scalar).symm carrier)),
                 carrierBits carrier) selected.1.1 selected.1.2 selected.2).map Prod.fst := by
   unfold idealGame hybridSimulator hybridStageTwo
-  simp only [PMF.bind_bind, PMF.bind_map, PMF.map_bind, PMF.pure_bind, Function.comp_def,
+  simp only [PMF.bind_bind, PMF.bind_map, PMF.pure_bind, Function.comp_def,
     map_fst_loggedOutcome]
   rfl
 
