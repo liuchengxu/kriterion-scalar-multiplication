@@ -23,3 +23,4 @@ import Proof.DeferredSteering
 import Proof.HybridChain
 import Proof.HybridReference
 import Proof.SimulatedChain
+import Proof.SimulatedReference
