@@ -11,6 +11,7 @@ values per forward query and two per inverse query.
 
 import Proof.ReferenceGame
 import Proof.Programming
+import Proof.Logged
 
 namespace Kriterion.ArgoMAC.Security
 
@@ -373,6 +374,156 @@ theorem publicAnswer_programIndices_single (programs : Programs)
   | encForward _ _ => rfl
   | encInverse _ _ => rfl
   | hash _ => rfl
+
+/-! ### The first-stage bad bound -/
+
+/-- The label coordinates a query may hit: the coordinate and position of its index and
+the label value each slot reads (`false` at hash slots, `true` at pad slots). -/
+def slotBit : FixedKeySlot → Bool
+  | .hash _ => false
+  | .pad _ => true
+
+/-- The fixed-key index of a permutation query. -/
+def queryIndex : Query → Option FixedKeyIndex
+  | .fixedForward index _ => some index
+  | .fixedInverse index _ => some index
+  | _ => none
+
+/-- A run mapped to its result and log depends only on the view and the initial log. -/
+theorem map_loggedOutcome_congr {Result : Type} {budget : Nat}
+    (program : OracleProgram (publicOracleSpec FixedKeyIndex Garbling.EncIndex) Result budget)
+    (first second : State) (sameView : first.view = second.view) (sameLog : first.log = second.log) :
+    (program.run idealOracle first).map loggedOutcome =
+      (program.run idealOracle second).map loggedOutcome := by
+  ext pair
+  obtain ⟨result, log⟩ := pair
+  exact run_idealOracle_agree program (fun _ => False) first second sameLog
+    (fun query _ => by rw [sameView]) result log (fun _ _ falsity => falsity)
+
+/-- The state a run of the first stage starts from: the view, an empty log, and the
+public data with the key. -/
+def firstState (view : View) (table : CurveMembership.Table) (carrier : NonZeroBase)
+    (key : InputMacKey) : State :=
+  { view, log := [], table, carrier, inputMacKey := key }
+
+/-- The first stage in logged form: it never reads the key. -/
+def loggedFirstStage (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (circuit : Garbling.Public) (view : View) : PMF ((AffineInput × adversary.State) × List Query) :=
+  ((adversary.chooseInput parameter circuit auxiliary).run idealOracle
+    (firstState view circuit.1 ⟨1, one_ne_zero⟩ witnessTape.inputMacKey)).map loggedOutcome
+
+theorem map_loggedOutcome_firstState (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (circuit : Garbling.Public) (view : View) (table : CurveMembership.Table)
+    (carrier : NonZeroBase) (key : InputMacKey) :
+    ((adversary.chooseInput parameter circuit auxiliary).run idealOracle
+      (firstState view table carrier key)).map loggedOutcome =
+      loggedFirstStage adversary parameter auxiliary circuit view :=
+  map_loggedOutcome_congr _ _ _ rfl rfl
+
+theorem loggedFirstStage_length (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (circuit : Garbling.Public) (view : View)
+    (outcome : (AffineInput × adversary.State) × List Query)
+    (member : outcome ∈ (loggedFirstStage adversary parameter auxiliary circuit view).support) :
+    outcome.2.length ≤ adversary.firstQueryBudget parameter := by
+  unfold loggedFirstStage at member
+  rw [PMF.support_map] at member
+  obtain ⟨output, outputMember, rfl⟩ := member
+  have bound := run_idealOracle_log_length _ _ output outputMember
+  simp only [firstState, List.length_nil, Nat.zero_add] at bound
+  exact bound
+
+/-- The key sampled first and the first stage run on data independent of the key is, on
+the data, the logged outcome, and the key, the data followed by the logged first stage
+followed by a fresh key. -/
+theorem firstStage_key_deferred {Data : Type} (data : PMF Data) (view : Data → View)
+    (circuit : Data → Garbling.Public) (table : Data → CurveMembership.Table)
+    (carrier : Data → NonZeroBase) (adversary : Adversary) (parameter : Nat) (auxiliary : Unit) :
+    ((PMF.uniformOfFintype InputMacKey).bind fun key => data.bind fun datum =>
+        ((adversary.chooseInput parameter (circuit datum) auxiliary).run idealOracle
+          (firstState (view datum) (table datum) (carrier datum) key)).map
+            fun selected => (key, datum, selected)).map
+        (fun triple => (triple.2.1, loggedOutcome triple.2.2, triple.1)) =
+      data.bind fun datum =>
+        (loggedFirstStage adversary parameter auxiliary (circuit datum) (view datum)).bind
+          fun outcome => (PMF.uniformOfFintype InputMacKey).map fun key => (datum, outcome, key) := by
+  simp only [PMF.map_bind, PMF.map_comp]
+  have inner (key : InputMacKey) (datum : Data) :
+      ((adversary.chooseInput parameter (circuit datum) auxiliary).run idealOracle
+        (firstState (view datum) (table datum) (carrier datum) key)).map
+          ((fun triple : InputMacKey × Data × ((AffineInput × adversary.State) × State) =>
+            (triple.2.1, loggedOutcome triple.2.2, triple.1)) ∘ fun selected => (key, datum, selected)) =
+      (loggedFirstStage adversary parameter auxiliary (circuit datum) (view datum)).map
+        fun outcome => (datum, outcome, key) := by
+    rw [← map_loggedOutcome_firstState adversary parameter auxiliary (circuit datum) (view datum)
+      (table datum) (carrier datum) key, PMF.map_comp]
+    rfl
+  simp only [inner]
+  rw [PMF.bind_comm]
+  refine congrArg (PMF.bind data) (funext fun datum => ?_)
+  change _ = (loggedFirstStage adversary parameter auxiliary (circuit datum) (view datum)).bind
+    fun outcome => (PMF.uniformOfFintype InputMacKey).bind
+      (PMF.pure ∘ fun key => (datum, outcome, key))
+  rw [PMF.bind_comm]
+  rfl
+
+/-- The first-stage bad bound. Any game that samples the key up front and runs the first
+stage on data independent of the key hits, with any log entry, a label determined by the
+entry and the data with mass at most the label-set size times the first budget over
+`2^128`. -/
+theorem firstStage_hidden_le {Data : Type} (data : PMF Data) (view : Data → View)
+    (circuit : Data → Garbling.Public) (table : Data → CurveMembership.Table)
+    (carrier : Data → NonZeroBase) (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (which : Query → Option (Bool × Fin coordinateBitCount × Bool))
+    (hidden : Data → Query → Finset Block) (points : Nat)
+    (cardLe : ∀ datum query, (hidden datum query).card ≤ points) :
+    ((PMF.uniformOfFintype InputMacKey).bind fun key => data.bind fun datum =>
+        ((adversary.chooseInput parameter (circuit datum) auxiliary).run idealOracle
+          (firstState (view datum) (table datum) (carrier datum) key)).map
+            fun selected => (key, datum, selected)).toOuterMeasure
+        {triple | ∃ query ∈ triple.2.2.2.log, ∃ coordinate position value,
+          which query = some (coordinate, position, value) ∧
+            keyLabel triple.1 coordinate position value ∈ hidden triple.2.1 query} ≤
+      points * adversary.firstQueryBudget parameter / 2 ^ 128 := by
+  have preimage : {triple : InputMacKey × Data × ((AffineInput × adversary.State) × State) |
+      ∃ query ∈ triple.2.2.2.log, ∃ coordinate position value,
+        which query = some (coordinate, position, value) ∧
+          keyLabel triple.1 coordinate position value ∈ hidden triple.2.1 query} =
+      (fun triple => (triple.2.1, loggedOutcome triple.2.2, triple.1)) ⁻¹'
+        {triple : Data × ((AffineInput × adversary.State) × List Query) × InputMacKey |
+          ∃ query ∈ triple.2.1.2, triple.2.2 ∈
+            {key | ∃ coordinate position value,
+              which query = some (coordinate, position, value) ∧
+                keyLabel key coordinate position value ∈ hidden triple.1 query}} := rfl
+  rw [preimage, ← PMF.toOuterMeasure_map_apply,
+    firstStage_key_deferred data view circuit table carrier adversary parameter auxiliary]
+  refine le_trans (hidden_label_bound data
+    (fun datum => loggedFirstStage adversary parameter auxiliary (circuit datum) (view datum))
+    (PMF.uniformOfFintype InputMacKey) (fun _ outcome => outcome.2)
+    (fun datum _ query => {key | ∃ coordinate position value,
+      which query = some (coordinate, position, value) ∧
+        keyLabel key coordinate position value ∈ hidden datum query})
+    (adversary.firstQueryBudget parameter) (points / 2 ^ 128)
+    (fun datum outcome member => loggedFirstStage_length _ _ _ _ _ outcome member) ?_) ?_
+  · intro datum _ query
+    rcases whichQuery : which query with _ | ⟨coordinate, position, value⟩
+    · simp only [reduceCtorEq, false_and, exists_false, Set.ofPred_false]
+      rw [MeasureTheory.measure_empty]
+      exact bot_le
+    · have same : {key | ∃ coordinate' position' value',
+          which query = some (coordinate', position', value') ∧
+            keyLabel key coordinate' position' value' ∈ hidden datum query} =
+          {key | keyLabel key coordinate position value ∈ hidden datum query} := by
+        ext key
+        simp only [whichQuery, Option.some.injEq, Prod.mk.injEq, Set.mem_ofPred_eq]
+        constructor
+        · rintro ⟨_, _, _, ⟨rfl, rfl, rfl⟩, member⟩
+          exact member
+        · intro member
+          exact ⟨coordinate, position, value, ⟨rfl, rfl, rfl⟩, member⟩
+      rw [whichQuery] at same
+      rw [same, uniform_keyLabel_mem]
+      exact ENNReal.div_le_div_right (Nat.cast_le.mpr (cardLe datum query)) _
+  · exact le_of_eq (by rw [div_eq_mul_inv, div_eq_mul_inv]; ring)
 
 end
 
