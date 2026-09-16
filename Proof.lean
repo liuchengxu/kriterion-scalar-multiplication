@@ -17,4 +17,5 @@ import Proof.GateProduct
 import Proof.FreshBridge
 import Proof.SecondStage
 import Proof.GameShape
+import Proof.Chain
 import Proof.DeferredSteering
