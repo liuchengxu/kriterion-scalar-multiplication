@@ -542,6 +542,38 @@ theorem fiberGame_eq_referenceGame [FieldCertificate] (scalar : NonZeroScalar)
   rw [left, right, ← uniformOfFintype_bind_bijection referenceSampleEquiv]
   rfl
 
+/-! ### Step 2 of the chain, and the whole hybrid side -/
+
+/-- Step 2 of the chain on the hybrid side: replacing the nonzero mask and the fresh digest
+family by the reference game's own coordinates and fiber sample costs one side's share of
+the one-time budget. -/
+theorem advantage_digestedReference_referenceGame_le [FieldCertificate] (scalar : NonZeroScalar)
+    (adversary : Adversary) (parameter : Nat) (auxiliary : Unit) :
+    advantage (digestedReference scalar adversary parameter auxiliary)
+        (referenceGame (fun carrier => ((mulScalar scalar).symm carrier).value) adversary
+          parameter auxiliary) ≤ sideOneTime := by
+  rw [digestedReference_eq, ← fiberGame_eq_referenceGame, ← fiberedDigestGame_eq_fiberGame]
+  unfold sideOneTime
+  exact advantage_trans _ _ _ _ _
+    (advantage_digestedGame_maskedGame_le scalar adversary parameter auxiliary)
+    (advantage_maskedGame_fiberedDigestGame_le scalar adversary parameter auxiliary)
+
+/-- The hybrid side of the chain, complete: the hybrid game is within `4 (q₁ + q₂) / 2 ^ 128`
+plus one side's one-time budget of the reference game of its own bridge key `carrier /
+scalar`. Steps 1 and 3 supply the per-query term, step 2 the one-time term. -/
+theorem advantage_hybridGame_referenceGame_le [FieldCertificate] [GroupCertificate]
+    (adversary : Adversary) (parameter : Nat) (scalar : NonZeroScalar) (auxiliary : Unit) :
+    advantage
+        (idealGame Garbling.garbledCircuit (fun _ => ciphertextBytes) (hybridSimulator scalar)
+          idealOracle adversary parameter scalar auxiliary)
+        (referenceGame (fun carrier => ((mulScalar scalar).symm carrier).value) adversary
+          parameter auxiliary) ≤
+      4 * ((adversary.firstQueryBudget parameter +
+        adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 + sideOneTime :=
+  advantage_trans _ _ _ _ _
+    (advantage_hybridGame_digestedReference_le adversary parameter scalar auxiliary)
+    (advantage_digestedReference_referenceGame_le scalar adversary parameter auxiliary)
+
 end
 
 end Kriterion.ArgoMAC.Security
