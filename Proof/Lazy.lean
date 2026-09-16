@@ -1128,6 +1128,131 @@ theorem compatibleLaw_symm_apply_le (assign : Assignment)
   exact Nat.cast_le.mpr (Nat.sub_le_sub_left small _)
 
 
+/-! ### The transcript grows by at most one pin per query -/
+
+theorem eq_of_mem_support_pure {Value : Type} {point other : Value}
+    (member : point ∈ (PMF.pure other).support) : point = other := by
+  rw [PMF.mem_support_iff, PMF.pure_apply] at member
+  by_contra different
+  exact member (if_neg different)
+
+theorem exists_of_mem_support_map {Value Other : Type} {law : PMF Value} {step : Value → Other}
+    {point : Other} (member : point ∈ (law.map step).support) : ∃ value, step value = point := by
+  rw [PMF.support_map] at member
+  obtain ⟨value, _, equal⟩ := member
+  exact ⟨value, equal⟩
+
+theorem lazyAnswer_pinnedCount (index : FixedKeyIndex) (view : View) (request : Query)
+    (assign : Assignment) (pair : request.Answer × Assignment)
+    (member : pair ∈ (lazyAnswer index view request assign).support) :
+    pinnedCount pair.2 ≤ pinnedCount assign + 1 := by
+  cases request with
+  | fixedForward queryIndex domain =>
+    by_cases tracked : queryIndex = index
+    · subst tracked
+      cases pinned : assign domain with
+      | some value =>
+        have lazyEq : lazyAnswer queryIndex view (PublicQuery.fixedForward queryIndex domain)
+            assign = PMF.pure (value, assign) := by
+          simp [lazyAnswer, pinned]
+          rfl
+        rw [lazyEq] at member
+        rw [eq_of_mem_support_pure member]
+        exact Nat.le_succ _
+      | none =>
+        have lazyEq : lazyAnswer queryIndex view (PublicQuery.fixedForward queryIndex domain)
+            assign = (freshValueLaw assign).map fun value =>
+              (value, Function.update assign domain (some value)) := by
+          simp [lazyAnswer, pinned]
+          rfl
+        rw [lazyEq] at member
+        obtain ⟨value, equal⟩ := exists_of_mem_support_map member
+        rw [← equal]
+        exact pinnedCount_update_le assign domain value
+    · have lazyEq : lazyAnswer index view (PublicQuery.fixedForward queryIndex domain) assign =
+          PMF.pure (publicAnswer view (PublicQuery.fixedForward queryIndex domain), assign) := by
+        simp only [lazyAnswer, if_neg tracked]
+        rfl
+      rw [lazyEq] at member
+      rw [eq_of_mem_support_pure member]
+      exact Nat.le_succ _
+  | fixedInverse queryIndex range =>
+    by_cases tracked : queryIndex = index
+    · subst tracked
+      cases transposed : pinnedInput assign range with
+      | some domain =>
+        have lazyEq : lazyAnswer queryIndex view (PublicQuery.fixedInverse queryIndex range)
+            assign = PMF.pure (domain, assign) := by
+          simp [lazyAnswer, transposed]
+          rfl
+        rw [lazyEq] at member
+        rw [eq_of_mem_support_pure member]
+        exact Nat.le_succ _
+      | none =>
+        have lazyEq : lazyAnswer queryIndex view (PublicQuery.fixedInverse queryIndex range)
+            assign = (freshInputLaw assign).map fun domain =>
+              (domain, Function.update assign domain (some range)) := by
+          simp [lazyAnswer, transposed]
+          rfl
+        rw [lazyEq] at member
+        obtain ⟨domain, equal⟩ := exists_of_mem_support_map member
+        rw [← equal]
+        exact pinnedCount_update_le assign domain range
+    · have lazyEq : lazyAnswer index view (PublicQuery.fixedInverse queryIndex range) assign =
+          PMF.pure (publicAnswer view (PublicQuery.fixedInverse queryIndex range), assign) := by
+        simp only [lazyAnswer, if_neg tracked]
+        rfl
+      rw [lazyEq] at member
+      rw [eq_of_mem_support_pure member]
+      exact Nat.le_succ _
+  | encForward queryIndex domain =>
+    have lazyEq : lazyAnswer index view (PublicQuery.encForward queryIndex domain) assign =
+        PMF.pure (publicAnswer view (PublicQuery.encForward queryIndex domain), assign) := rfl
+    rw [lazyEq] at member
+    rw [eq_of_mem_support_pure member]
+    exact Nat.le_succ _
+  | encInverse queryIndex range =>
+    have lazyEq : lazyAnswer index view (PublicQuery.encInverse queryIndex range) assign =
+        PMF.pure (publicAnswer view (PublicQuery.encInverse queryIndex range), assign) := rfl
+    rw [lazyEq] at member
+    rw [eq_of_mem_support_pure member]
+    exact Nat.le_succ _
+  | hash point =>
+    have lazyEq : lazyAnswer index view (PublicQuery.hash point) assign =
+        PMF.pure (publicAnswer view (PublicQuery.hash point), assign) := rfl
+    rw [lazyEq] at member
+    rw [eq_of_mem_support_pure member]
+    exact Nat.le_succ _
+
+/-- A lazy run of a program with `budget` queries pins at most `budget` further points. -/
+theorem lazyRun_pinnedCount {Result : Type} {budget : Nat} (index : FixedKeyIndex)
+    (program : OracleProgram (publicOracleSpec FixedKeyIndex Garbling.EncIndex) Result budget) :
+    ∀ (state : State) (assign : Assignment) (output : (Result × List Query) × Assignment),
+      output ∈ (lazyRun index program state assign).support →
+        pinnedCount output.2 ≤ pinnedCount assign + budget := by
+  induction program with
+  | pure distribution =>
+    intro state assign output member
+    rw [lazyRun, PMF.support_map] at member
+    obtain ⟨_, _, rfl⟩ := member
+    exact Nat.le_add_right _ _
+  | query request next inductionHypothesis =>
+    intro state assign output member
+    rw [lazyRun, PMF.support_bind] at member
+    simp only [Set.mem_iUnion] at member
+    obtain ⟨pair, pairMember, member⟩ := member
+    have tail := inductionHypothesis pair.1 { state with log := request :: state.log } pair.2
+      output member
+    have head := lazyAnswer_pinnedCount index state.view request assign pair pairMember
+    omega
+  | sample distribution next inductionHypothesis =>
+    intro state assign output member
+    rw [lazyRun, PMF.support_bind] at member
+    simp only [Set.mem_iUnion] at member
+    obtain ⟨value, _, member⟩ := member
+    exact inductionHypothesis value state assign output member
+
+
 end
 
 end Kriterion.ArgoMAC.Security
