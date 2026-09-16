@@ -441,6 +441,58 @@ theorem fresh_of_notMem_freshnessHidden (view : PermutationOracle FixedKeyIndex 
     fun logged => good _ logged ⟨request, member, rfl, Or.inr rfl⟩⟩
   exact Equiv.apply_symm_apply _ _
 
+/-- The transcript conditions of the double programming already imply the steering's own
+freshness: a first stage that has neither queried the selected label nor used either
+programmed range cannot have logged any of the four answers the steering changes.
+
+So the freshness half of the steering hop's bad event is **not** a separate charge. The
+fourth clause -- no forward entry whose programmed image is the steered range -- is the one
+that needs the transcript: a logged forward entry is pinned, the honest programming moves
+only the erased image and the honest range, and the transcript uses neither. -/
+theorem not_freshnessHidden_of_covers (index : FixedKeyIndex) (assign : Assignment)
+    (permutation : Equiv Block Block) (compatible : Compatible assign permutation)
+    (label honest steered : Block) (fresh : assign label = none)
+    (honestUnused : honest ∉ pinnedRange assign) (steeredUnused : steered ∉ pinnedRange assign)
+    (log : List Query) (covers : TranscriptCovers index assign log)
+    (view : PermutationOracle FixedKeyIndex Block)
+    (atIndex : view.permutation index = programmed permutation label honest)
+    (query : Query) (member : query ∈ log) :
+    ¬ freshnessHidden view [⟨index, label, steered⟩] query := by
+  cases query with
+  | fixedForward queryIndex input =>
+    rintro ⟨request, requestMember, requestIndex, hit⟩
+    rw [List.mem_singleton] at requestMember
+    subst requestMember
+    subst requestIndex
+    obtain ⟨value, pinned⟩ := Option.isSome_iff_exists.mp (covers.1 input member)
+    rcases hit with atLabel | atRange
+    · rw [atLabel, fresh] at pinned
+      exact absurd pinned (by simp)
+    · have notHonest : value ≠ honest := fun same =>
+        honestUnused (mem_pinnedRange (same ▸ pinned))
+      have notErased : value ≠ permutation label := by
+        intro same
+        have sameInput : input = label :=
+          permutation.injective ((compatible input value pinned).trans same)
+        rw [sameInput, fresh] at pinned
+        exact absurd pinned (by simp)
+      rw [atIndex, programmed_apply, compatible input value pinned,
+        Equiv.swap_apply_of_ne_of_ne notErased notHonest] at atRange
+      exact steeredUnused (mem_pinnedRange (atRange ▸ pinned))
+  | fixedInverse queryIndex value =>
+    rintro ⟨request, requestMember, requestIndex, hit⟩
+    rw [List.mem_singleton] at requestMember
+    subst requestMember
+    subst requestIndex
+    rcases hit with atRange | atErased
+    · have valueEq : value = steered := atRange
+      exact steeredUnused (valueEq ▸ covers.2 value member)
+    · rw [atIndex, programmed_apply_label] at atErased
+      exact honestUnused (atErased ▸ covers.2 value member)
+  | encForward queryIndex value => exact fun hidden => hidden
+  | encInverse queryIndex value => exact fun hidden => hidden
+  | hash value => exact fun hidden => hidden
+
 end
 
 end Kriterion.ArgoMAC.Security
