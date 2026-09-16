@@ -9,3 +9,4 @@ import Proof.Logged
 import Proof.Programming
 import Proof.Uniform
 import Proof.Deferred
+import Proof.ReferenceGame
