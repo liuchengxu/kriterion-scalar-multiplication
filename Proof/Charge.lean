@@ -30,6 +30,7 @@ What is left after this file is the probabilistic step: the mass of the bad
 event under the joint law of the shifted game and the two hash-fiber chunks.
 -/
 
+import Proof.Erased
 import Proof.Shifted
 
 namespace Kriterion.ArgoMAC.Security
@@ -180,6 +181,125 @@ theorem selectedSimulatedStageTwo_double [FieldCertificate] [GroupCertificate]
     programAll_steerRequests _ key input wanted hash (fresh hash member)
   rw [programmed]
   rfl
+
+/-! ### The double programming against the single one -/
+
+/-- The single programming the shifted reference round performs: the reference programming
+of the shifted outputs and the resampled steering fiber, on the unprogrammed family. -/
+def shiftedOracle (key : InputMacKey) (input : AffineInput) (outputs : GateValues BaseField)
+    (rows : GateValues BitAdaptor.Ciphertext) (fibers : GateValues (BitVec 384))
+    (wanted : BaseField) (hash : BitVec 384)
+    (oracle : PermutationOracle FixedKeyIndex Block) : PermutationOracle FixedKeyIndex Block :=
+  programIndices (selectedPrograms key input (setSteering wanted outputs) rows
+    (setSteering hash fibers)) oracle
+
+/-- The queries at which a second programming of already programmed indices differs from
+programming those indices once to the second range.
+
+A forward query is hidden when its image under the unprogrammed permutation is one of the
+two ranges; an inverse query when its argument is the first range or the image the
+programming erases. Both conditions live at the query's **own** index, which is what lets
+the union bound charge one log entry once rather than once per tracked index. -/
+def doubledHidden (oracle : PermutationOracle FixedKeyIndex Block) (honest steered : Programs) :
+    Query → Prop
+  | .fixedForward index input =>
+      ∃ label first second, honest index = some (label, first) ∧
+        steered index = some (label, second) ∧
+        (oracle.permutation index input = first ∨ oracle.permutation index input = second)
+  | .fixedInverse index value =>
+      ∃ label first second, honest index = some (label, first) ∧
+        steered index = some (label, second) ∧
+        (value = first ∨ value = oracle.permutation index label)
+  | _ => False
+
+/-- Off its hidden queries, the doubly programmed family answers as the singly programmed
+one. This is the identical-until-bad input of the steering hop, for the whole family of
+programmed indices at once. -/
+theorem publicAnswer_doubled
+    (rest : PermutationOracle Garbling.EncIndex Block × (BaseField → Block × Block))
+    (oracle : PermutationOracle FixedKeyIndex Block) (honest steered combined : Programs)
+    (untouched : ∀ index, steered index = none → combined index = honest index)
+    (covered : ∀ index label second, steered index = some (label, second) →
+      ∃ first, honest index = some (label, first))
+    (retargeted : ∀ index label second, steered index = some (label, second) →
+      combined index = some (label, second))
+    (query : Query) (good : ¬ doubledHidden oracle honest steered query) :
+    publicAnswer (programIndices steered (programIndices honest oracle), rest) query =
+      publicAnswer (programIndices combined oracle, rest) query := by
+  cases query with
+  | fixedForward index input =>
+    show (programIndices steered (programIndices honest oracle)).permutation index input =
+      (programIndices combined oracle).permutation index input
+    cases steeredAt : steered index with
+    | none =>
+      rw [programIndices_none steered _ index steeredAt,
+        programIndices_congr_at combined honest oracle index (untouched index steeredAt)]
+    | some pair =>
+      obtain ⟨label, second⟩ := pair
+      obtain ⟨first, honestAt⟩ := covered index label second steeredAt
+      have bad : ¬(oracle.permutation index input = first ∨
+          oracle.permutation index input = second) := fun hit =>
+        good ⟨label, first, second, honestAt, steeredAt, hit⟩
+      rw [programIndices_eq_programmed steered _ index label second steeredAt,
+        programIndices_eq_programmed honest oracle index label first honestAt,
+        programIndices_eq_programmed combined oracle index label second
+          (retargeted index label second steeredAt)]
+      exact programmed_programmed_apply_of_ne (oracle.permutation index) label first second input
+        (fun hit => bad (Or.inl hit)) (fun hit => bad (Or.inr hit))
+  | fixedInverse index value =>
+    show ((programIndices steered (programIndices honest oracle)).permutation index).symm
+        value = ((programIndices combined oracle).permutation index).symm value
+    cases steeredAt : steered index with
+    | none =>
+      rw [programIndices_none steered _ index steeredAt,
+        programIndices_congr_at combined honest oracle index (untouched index steeredAt)]
+    | some pair =>
+      obtain ⟨label, second⟩ := pair
+      obtain ⟨first, honestAt⟩ := covered index label second steeredAt
+      have bad : ¬(value = first ∨ value = oracle.permutation index label) := fun hit =>
+        good ⟨label, first, second, honestAt, steeredAt, hit⟩
+      rw [programIndices_eq_programmed steered _ index label second steeredAt,
+        programIndices_eq_programmed honest oracle index label first honestAt,
+        programIndices_eq_programmed combined oracle index label second
+          (retargeted index label second steeredAt)]
+      exact programmed_programmed_symm_apply_of_ne (oracle.permutation index) label first second
+        value (fun hit => bad (Or.inl hit)) (fun hit => bad (Or.inr hit))
+  | encForward queryIndex value => rfl
+  | encInverse queryIndex value => rfl
+  | hash value => rfl
+
+/-- The steering hop's own instance: off the hidden queries, the doubly programmed view of
+the steered reference round answers as the singly programmed view of the shifted reference
+round. -/
+theorem publicAnswer_steeringDouble (key : InputMacKey) (input : AffineInput)
+    (outputs : GateValues BaseField) (rows : GateValues BitAdaptor.Ciphertext)
+    (fibers : GateValues (BitVec 384)) (wanted : BaseField) (hash : BitVec 384)
+    (rest : PermutationOracle Garbling.EncIndex Block × (BaseField → Block × Block))
+    (oracle : PermutationOracle FixedKeyIndex Block) (query : Query)
+    (good : ¬ doubledHidden oracle (selectedPrograms key input outputs rows fibers)
+      (steerPrograms key input wanted hash (rows .x7 0)) query) :
+    publicAnswer (doubleSteeredOracle key input outputs rows fibers wanted hash oracle, rest)
+        query =
+      publicAnswer (shiftedOracle key input outputs rows fibers wanted hash oracle, rest) query :=
+  publicAnswer_doubled rest oracle _ _ _
+    (steerPrograms_untouched key input outputs (setSteering wanted outputs) rows fibers wanted
+      hash fun adaptor position atGate =>
+        setSteering_other wanted outputs adaptor position atGate)
+    (steerPrograms_covered key input outputs rows fibers wanted hash)
+    (steerPrograms_retargeted key input (setSteering wanted outputs) rows fibers wanted hash
+      (setSteering_steeringGate wanted outputs))
+    query good
+
+/-- The shifted reference round's view, written with the steering shift instead of the
+resampled value. -/
+theorem shiftedOracle_eq_shiftSteering (key : InputMacKey) (input : AffineInput)
+    (outputs : GateValues BaseField) (rows : GateValues BitAdaptor.Ciphertext)
+    (fibers : GateValues (BitVec 384)) (shift : BaseField) (hash : BitVec 384)
+    (oracle : PermutationOracle FixedKeyIndex Block) :
+    shiftedOracle key input outputs rows fibers (outputs .x7 0 + shift) hash oracle =
+      programIndices (selectedPrograms key input (shiftSteering shift outputs) rows
+        (setSteering hash fibers)) oracle := by
+  rw [shiftedOracle, shiftSteering_eq_setSteering]
 
 end
 
