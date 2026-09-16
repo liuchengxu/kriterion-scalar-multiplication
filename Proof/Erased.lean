@@ -73,6 +73,49 @@ theorem compatibleLaw_programmed {Result : Type} (assign : Assignment)
   rw [programmed, pinned]
   rfl
 
+/-- Programming one label twice -- honestly and then steered -- is, in law, programming it
+once to the steered range.
+
+This is the exact statement the steering hop needs, and it costs nothing beyond the
+transcript conditions: as long as the transcript leaves the label unpinned and has used
+neither range, the doubly programmed view and the singly programmed one are the *same* law
+-- uniform over the permutations compatible with the transcript re-pinned at the label to
+the steered range. The honest programming is invisible because the value it erases is fresh
+and the value it installs is immediately overwritten.
+
+The consequence for the accounting is that a second-stage query can never separate the two
+views: the only charge of the hop is the transcript conditions themselves, which are
+conditions on the *first* stage's log. -/
+theorem compatibleLaw_double {Result : Type} (assign : Assignment)
+    (injective : AssignmentInjective assign) (label honest steered : Block)
+    (fresh : assign label = none) (honestUnused : honest ∉ pinnedRange assign)
+    (steeredUnused : steered ∉ pinnedRange assign)
+    (continuation : Equiv Block Block → PMF Result) :
+    ((compatibleLaw assign).bind fun permutation =>
+        continuation (programmed (programmed permutation label honest) label steered)) =
+      (compatibleLaw assign).bind fun permutation =>
+        continuation (programmed permutation label steered) := by
+  classical
+  rw [compatibleLaw_programmed assign injective label honest fresh honestUnused
+      (fun view _ => continuation (programmed view label steered)),
+    compatibleLaw_programmed assign injective label steered fresh steeredUnused
+      (fun view _ => continuation view)]
+  refine congrArg (PMF.bind _) (funext fun _ => ?_)
+  haveI honestNonempty :=
+    nonempty_compatible _ (update_injective assign injective label honest honestUnused)
+  haveI steeredNonempty :=
+    nonempty_compatible _ (update_injective assign injective label steered steeredUnused)
+  rw [compatibleLaw_eq _ honestNonempty, compatibleLaw_eq _ steeredNonempty,
+    uniform_map_val_bind, uniform_map_val_bind,
+    ← uniformOfFintype_bind_of_equiv (repin assign label honest steered fresh honestUnused
+      steeredUnused) (fun view => continuation view.1)]
+  refine congrArg (PMF.bind _) (funext fun view => ?_)
+  have pinned : view.1 label = honest :=
+    view.2 label honest (by rw [Function.update_self])
+  show continuation (programmed view.1 label steered) = _
+  rw [programmed, pinned]
+  rfl
+
 /-- The joint law of a run on the programmed view and the erased image factors: the run is
 the run on a uniform view compatible with the re-pinned transcript, and the erased image is
 an independent fresh value. -/
