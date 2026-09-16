@@ -1,8 +1,10 @@
 # Proof architecture for `hybridGame_close_to_idealGame`
 
-Status of the tree: every obligation is proved except the single `sorry` at
+Status of the tree (after slice 3k): every obligation is proved except the single `sorry` at
 `Proof/Privacy.lean`, theorem `hybridGame_close_to_idealGame` (statement must stay
-byte-identical). This document is the plan for closing it, the pieces that are already
+byte-identical). Both sides of the chain reach a reference game; only step 7 -- the
+steering identification -- and the final assembly are open, and step 7 must be
+**re-scheduled** (see "Corrections from slice 3k"). This document is the plan for closing it, the pieces that are already
 machine-checked, and the constant it produces. The next slice must inherit it rather than
 re-derive it.
 
@@ -83,6 +85,15 @@ second stage on the programmed state, and hop B over the pair of second stages
 (`advantage_secondStage_le`). **Only step 7 and the final assembly are open**, so
 `hybridGame_close_to_idealGame` still carries the single `sorry`. See "What P10 still has to
 do" and the constant assignment below.
+
+Slice 3k built the two-stage glue and the visible joint law that step 7 consumes
+(`Proof/VisibleGame.lean`), the off-curve half of the steering identification, and a new
+reparametrisation tool for a doubly programmed permutation (`Proof/Retarget.lean`). It did
+**not** close step 7, because step 7 as scheduled in §4 is not provable with the tools the
+tree has. The obstruction is analysed under "Corrections from slice 3k" below; it is a
+real gap in the plan, not a missing lemma, and the next slice must re-order the `S` side
+rather than push harder on step 7 where it now sits. `hybridGame_close_to_idealGame` still
+carries the single `sorry`.
 
 ## 1. The correction that drives the architecture
 
@@ -454,6 +465,84 @@ instead of the whole key; `uniform_bind_setKeyLabel` / `uniform_keyLabel_mem` ar
   carrier).value`; `advantage_hybridGame_referenceGame_le` reads
   `referenceGame (hybridBridge scalar) …` (definitionally the old spelling).
 
+**Corrections from slice 3k — READ THIS BEFORE TOUCHING STEP 7.**
+
+* **§4's step 7 is not provable where it is scheduled, and its parenthesis "2 more hidden
+  points per direction at those five indices, *stage 1 only*" is wrong as stated.** The
+  double programming of the steering gate is, at one steering index with selected label
+  `ℓ`, honest range `f` and steered range `s`,
+
+  ```
+  A = programmed (programmed π ℓ f) ℓ s        (the steered reference game)
+  B = programmed π ℓ s                          (the reference game R(c/s))
+  ```
+
+  Writing `ρ = π ℓ`, the two differ exactly at: forward queries `x ∈ {π⁻¹ f, π⁻¹ s}` and
+  inverse queries `y ∈ {ρ, f}` — two points per direction, as §4 says. Every one of the
+  four is a condition on the **key label** `ℓ` (`ℓ = f' ⊕ π x`, `ℓ = s' ⊕ π x`,
+  `ℓ = π⁻¹ y`, `ℓ = f' ⊕ y`, where `f = f' ⊕ ℓ` and `s = s' ⊕ ℓ` are the chunk values).
+  But **`ℓ` is handed to the adversary by the second stage**, so neither
+  `firstStage_hidden_le` (key independent of stage 1) nor `secondStage_hidden_le` (defers
+  only the *unread* label of each gate) can bound it, and the hop as available is a
+  **stage-2** hop whose bad event covers stage-2 queries.
+* **The reparametrisation that would make it a stage-1 hop is circular.** `A` and `B` are
+  exact reparametrisations of one another: with `σ` the stage-2 view and `ρ` the erased
+  image, both games are `[σ uniform on the permutations sending ℓ to s] ⊗ [ρ uniform]`,
+  with identical stage-2 views and stage-1 views differing by a 3-cycle on `{f, s, ρ}`.
+  That is exactly §4's "stage 1 only". It cannot be used, because the substitution needs
+  the swap data — hence `f`, `s`, hence the *input* — to be fixed **before** the first
+  stage, and the input is the first stage's own output. The same circularity kills
+  `programIndices_steerPrograms`'s `swapRanges` and the `twoStageGame_congr` route (the
+  joint law would have to equate `(oracle, retargeted oracle)` with `(oracle, oracle)`).
+* **What the remaining bad event really needs is permutation randomness, which the tree
+  does not have.** Off the four bad points, two need the adversary to invert the
+  unprogrammed `π` at a point it has not queried (`π⁻¹ f`, `π⁻¹ s`, and `ρ = π ℓ`), and
+  one needs it to guess the discarded honest chunk `f'`. `f'` is a 128-bit chunk of
+  `uniformHashFiber (o x7 0)`, whose largest point mass is about `1.11 / 2^128` — already
+  above the `1/2^128` the accounting assumes — so even the chunk-freshness half does not
+  fit the frozen `2 q / 2^128`. §4's note "the `R`-side bounds sample the hidden label
+  fresh, so each log entry hits with probability exactly `k/2^128`" does not apply to this
+  hop.
+* **The fix is to move the steering removal to where the ranges are fresh uniform blocks:
+  immediately after step 4, before step 5.** Right after the first hop the oracle is
+  `programIndices (usedPrograms key (freshValue digests pads)) oracle` and the honest range
+  at a steering index is `chunk(digests) ⊕ usedLabel key index` with `digests` **uniform**
+  — and `usedLabel key index` is input-independent, because the steered indices are exactly
+  the ones whose slot bit is the input's. With a uniform honest range, `programAtEquiv`
+  makes the doubly programmed view a *singly* programmed view of a uniform permutation with
+  a free erased image, so the steering can be absorbed into the first hop's programming
+  exactly. §4 already anticipated this ("merging it into step 5 gives 3 points per
+  direction at those indices"); what it got wrong is that the merge is not an optimisation,
+  it is the only place the argument closes. Steps 5 and 6 then have to be re-run on the
+  merged shape, which is plumbing, not new mathematics: they are already generic in the
+  second stage (`advantage_firstView_le`, `advantage_secondStage_le`).
+* **The `6/2^128` one-time term is not needed on the new route.**
+  `programIndices_steerPrograms`'s freshness side condition (`π ℓ ∉ {f, s}`) exists only to
+  make `programmed_programmed` compose. `uniform_programmed_retarget`
+  (`Proof/Retarget.lean`) replaces it with an unconditional reparametrisation, so the
+  `6/2^128` in `chainOneTime` becomes slack rather than a charge. `Proof/Chain.lean` was
+  **not** modified: the constant is still budgeted and now has margin.
+* **New tools built this slice, all machine-checked and reusable.**
+  `Proof/Retarget.lean`: `programmed_apply_label`, `programmed_programmed_label`,
+  `shiftErased`/`shiftErasedEquiv`, `retarget`/`retargetEquiv`, `uniform_programmed_shift`,
+  **`uniform_programmed_erased`** (a uniform permutation read through one programming is
+  that programming together with an *independent uniform* erased image) and
+  **`uniform_programmed_retarget`** (the intermediate programming may be dropped in law).
+  Neither needs the ranges to be uniform. `Proof/Deferred.lean`:
+  `twoStageGame_congr_support`, the transfer law with **two** second stages that need agree
+  only on the support — this is what lets the off-curve results (no steering) and the
+  on-curve results (steering = shift of the hidden part) be handled by different arguments
+  in one application. `Proof/VisibleGame.lean`: `tableOfVisible` and
+  `tableOfVisible_visibleCoordinates` (the released table is a function of the visible
+  coordinates), `releasedPair`, `map_releasedPair_offCurve` and `map_releasedPair_onCurve`
+  (the two joint laws step 7 has to match, both discharged from P4),
+  `referenceRound_eq_twoStageGame` and `steeredReferenceRound_eq_twoStageGame` (the glue
+  slice 3j asked for — both are `rfl`), `steeringTarget_offCurve`,
+  `simulatedStageTwo_of_noTarget` and `steeredReleasedStageTwo_offCurve` (off the curve the
+  simulator has no target, so the two second stages are the same function).
+* **No constant moved, and no statement was weakened.** `Proof/Chain.lean` and
+  `Proof/Privacy.lean` are byte-identical to slice 3j.
+
 **What P10 still has to do.** The whole `H` side is done: steps 1 and 3 (slice 3h,
 `Proof/HybridChain.lean`) and step 2 plus the identification with `R(c/s)` (slice 3i,
 `Proof/HybridReference.lean`). The whole `S` side up to the steering is done: steps 4, 5 and
@@ -461,14 +550,24 @@ instead of the whole key; `uniform_bind_setKeyLabel` / `uniform_keyLabel_mem` ar
 identification with `R(u)` + steering (slice 3j, `Proof/SimulatedReference.lean`). What is
 left, in order:
 
-(i) **step 7**: identify `(uniform u).bind fun u => steeredReferenceGame (fun _ => u.value)`
-with `referenceGame (hybridBridge scalar)`, via `twoStageGame_congr`,
-`visibleCoordinates_offCurve` / `visibleCoordinates_onCurve`, `steer_programSelected`,
-`programIndices_steerPrograms` and `uniformHashFibers_setSteering`. Both sides are already in
-the same split sample shape (`referenceGame_eq_split` for `referenceGame`, and
-`steeredReferenceGame` by definition), and the two rounds `referenceRound` and
-`steeredReferenceRound` take the same arguments, so the comparison is round-by-round under
-one uniform sample. Budget: `2 (q₁+q₂)/2^128 + 6/2^128`.
+(i) **step 7, re-scheduled (slice 3k)**: the steering must be removed on the `S` side
+**between step 4 and step 5**, where the honest range at each steering index is a uniform
+128-bit chunk of the fresh digests and the label the steering programs at is
+`usedLabel key index`, which does not depend on the adaptively chosen input. Use
+`programAtEquiv` / `uniform_programmed_erased` to absorb the steering's programming into the
+first hop's programming, then re-run steps 5 and 6 (both are already generic in the second
+stage) and the `S` side's step 2 on the merged shape. What is left after that is the pure
+*visible-law* identification, for which everything is now in place:
+`twoStageGame_congr_support` with `referenceRound_eq_twoStageGame` /
+`steeredReferenceRound_eq_twoStageGame`, discharging the joint law by
+`map_releasedPair_offCurve` off the curve and `map_releasedPair_onCurve` on it, and the
+second stages by `steeredReleasedStageTwo_offCurve` off the curve and by
+`steer_programSelected` + `uniformHashFibers_setSteering` on it. Budget: `2 (q₁+q₂)/2^128`;
+the `6/2^128` is no longer needed (see "Corrections from slice 3k").
+
+Do **not** attempt step 7 in its slice-3j position (after the `S` side's step 2): the honest
+range is then a fiber chunk, the label is known to the second stage, and the hop is not
+bounded by anything the tree has. The analysis is written out above.
 
 (ii) chain `advantage_hybridGame_referenceGame_le`, step 7 and
 `advantage_simulatedGame_steeredReferenceGame_le` with `advantage_trans` (the `S` side
@@ -495,7 +594,7 @@ is needed) and close with `workPerAdvantage_of_chain`.
 | 2 twin (1270 digests → field + fiber) | S | 0 | `1270·p/2^384` | **done** (`advantage_steeredMaskedGame_steeredFiberedDigestGame_le`) |
 | 2 twin (fiber sample → selected outputs) | S | 0 | 0 | **done** (`steeredFiberedDigestGame_eq_steeredFiberGame`) |
 | 2 twin (identify with `R(u)` + steering) | S | 0 | 0 | **done** (`steeredFiberGame_eq_steeredReferenceGame`) |
-| 7 (`swap(r₁,r₂)` reparametrisation and the steering identification) | S | `2q/2^128` | `6/2^128` | open |
+| 7 (steering removal and the visible-law identification) | S | `2q/2^128` | `6/2^128` budgeted, **not needed** on the re-scheduled route | open (slice 3k: glue, off-curve half and the reparametrisation tool built; the hop must move to between steps 4 and 5) |
 
 Slice 3h consumed `4·(q₁+q₂)/2^128` of the per-query budget and none of the one-time budget.
 **Slice 3i consumed exactly one `sideOneTime`** of the one-time budget and none of the
@@ -572,6 +671,19 @@ shows a logged run depends only on the view and the initial log) and `slotBit`/`
 * `Fintype (BitVec 256)` is declared in `Proof/Reference.lean`; `Fintype (BitVec 384)` in
   `Proof/Simulator.lean`; `Fintype Coordinates` via `Coordinates.data`.
 * The `sorry` must remain the one at `hybridGame_close_to_idealGame` until P10 replaces it.
+* **A structure declared under `Construction/` has no `ext` lemma** (only `@[ext]`
+  structures do). Declare the field-wise equality in `Proof/` instead and prove it by
+  `obtain ⟨_, …⟩ := first; obtain ⟨_, …⟩ := second; simp_all` (`curveTable_ext`).
+* An `Equiv` whose `toFun` is a lambda needs a `show` before `rw`: `left_inv` presents the
+  goal as `(fun other => value ^^^ other) ((fun other => value ^^^ other) other) = other`
+  and `rw` will not beta-reduce it (`xorBlock`).
+* `Vector.ext fun position member => ?_` leaves a `getElem` goal; combine
+  `Vector.getElem_ofFn` with `← Vector.get_eq_getElem (index := ⟨position, member⟩)` to get
+  back to the `.get` form the coordinate lemmas are stated in
+  (`tableOfVisible_visibleCoordinates`).
+* Both `twoStageGame` glue lemmas are `rfl`: a round whose only uses of the sampled
+  coordinates are the released table and the selected outputs is *literally* a
+  `twoStageGame` once those two are named. Name them before trying to prove anything.
 * `exact inductionHypothesis _ _ member` in an induction over `OracleProgram` can time out at
   `whnf` when the expected type fixes the state by unification before `member` is seen (it then
   unfolds `run`); pass the state explicitly, as in `run_idealOracle_support`.
