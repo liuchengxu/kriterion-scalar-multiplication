@@ -13,6 +13,7 @@ exactly the reference table whose per-gate secrets are those two values.
 
 import Proof.DeferredSteering
 import Proof.Programming
+import Proof.Product
 
 namespace Kriterion.ArgoMAC.Security
 
@@ -164,5 +165,93 @@ theorem curveGarble_programFamily (bridgeKey mask r1 r2 : BaseField)
     fun slope => digitGarble_programFamily oracle key fresh .x7 slope
   simp only [Coordinates.table, CurveMembership.garble, curveOracles, secretOracles,
     y4, y6, x3, x5, x7]
+
+/-! ### The fresh values are the per-gate digest and pad -/
+
+theorem extract_append384_low (high middle low : Block) :
+    (high ++ middle ++ low : BitVec 384).extractLsb' 0 128 = low := by
+  ext index bound
+  simp only [BitVec.getElem_extractLsb', Nat.zero_add, BitVec.getLsbD_append,
+    show index < 128 from bound, if_pos, BitVec.getLsbD_eq_getElem bound]
+
+theorem extract_append384_middle (high middle low : Block) :
+    (high ++ middle ++ low : BitVec 384).extractLsb' 128 128 = middle := by
+  ext index bound
+  simp only [BitVec.getElem_extractLsb', BitVec.getLsbD_append]
+  rw [if_neg (by omega), if_pos (by omega)]
+  simp only [show 128 + index - 128 = index by omega]
+  exact BitVec.getLsbD_eq_getElem bound
+
+theorem extract_append384_high (high middle low : Block) :
+    (high ++ middle ++ low : BitVec 384).extractLsb' 256 128 = high := by
+  ext index bound
+  simp only [BitVec.getElem_extractLsb', BitVec.getLsbD_append]
+  rw [if_neg (by omega), if_neg (by omega)]
+  simp only [show 256 + index - 128 - 128 = index by omega]
+  exact BitVec.getLsbD_eq_getElem bound
+
+theorem extract_append256_low (high low : Block) :
+    (high ++ low : BitVec 256).extractLsb' 0 128 = low := by
+  ext index bound
+  simp only [BitVec.getElem_extractLsb', Nat.zero_add, BitVec.getLsbD_append,
+    show index < 128 from bound, if_pos, BitVec.getLsbD_eq_getElem bound]
+
+theorem extract_append256_high (high low : Block) :
+    (high ++ low : BitVec 256).extractLsb' 128 128 = high := by
+  ext index bound
+  simp only [BitVec.getElem_extractLsb', BitVec.getLsbD_append]
+  rw [if_neg (by omega)]
+  simp only [show 128 + index - 128 = index by omega]
+  exact BitVec.getLsbD_eq_getElem bound
+
+/-- The fresh value one index must carry for its gate to have the given digest and pad. -/
+def freshOfSecrets (key : InputMacKey) (digests : GateValues (BitVec 384))
+    (pads : GateValues BitAdaptor.Ciphertext) (index : FixedKeyIndex) : Block :=
+  match index.slot with
+  | .hash chunk =>
+    (digests index.adaptor index.position).extractLsb' (128 * chunk.val) 128 ^^^
+      (gateKey key index.adaptor index.position).falseLabel
+  | .pad chunk =>
+    (pads index.adaptor index.position).extractLsb' (128 * chunk.val) 128 ^^^
+      (gateKey key index.adaptor index.position).trueLabel
+
+/-- The fresh values of the reparametrisation are, coordinate by coordinate, the digest
+and the pad of every gate. -/
+def freshEquiv (key : InputMacKey) :
+    (FixedKeyIndex → Block) ≃ GateValues (BitVec 384) × GateValues BitAdaptor.Ciphertext where
+  toFun fresh := (freshDigest key fresh, freshPad key fresh)
+  invFun secrets := freshOfSecrets key secrets.1 secrets.2
+  left_inv fresh := by
+    funext index
+    obtain ⟨adaptor, position, slot⟩ := index
+    cases slot with
+    | hash chunk =>
+      fin_cases chunk <;>
+        simp [freshOfSecrets, freshDigest, extract_append384_low,
+          extract_append384_middle, extract_append384_high, xor_xor_cancel]
+    | pad chunk =>
+      fin_cases chunk <;>
+        simp [freshOfSecrets, freshPad, extract_append256_low, extract_append256_high,
+          xor_xor_cancel]
+  right_inv secrets := by
+    obtain ⟨digests, pads⟩ := secrets
+    refine Prod.ext (funext fun adaptor => funext fun position => ?_)
+      (funext fun adaptor => funext fun position => ?_)
+    · simp only [freshDigest, freshOfSecrets, xor_xor_cancel]
+      exact append_extract_384 _
+    · simp only [freshPad, freshOfSecrets, xor_xor_cancel]
+      exact append_extract_256 _
+
+noncomputable section
+
+/-- The fresh values of a uniform reparametrisation are a uniform digest and a uniform pad
+for every gate. -/
+theorem uniform_map_freshEquiv (key : InputMacKey) :
+    (PMF.uniformOfFintype (FixedKeyIndex → Block)).map (freshEquiv key) =
+      PMF.uniformOfFintype (GateValues (BitVec 384) × GateValues BitAdaptor.Ciphertext) := by
+  have base := uniformOfFintype_map_bijection (freshEquiv key)
+  exact base
+
+end
 
 end Kriterion.ArgoMAC.Security
