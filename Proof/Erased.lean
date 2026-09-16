@@ -253,6 +253,113 @@ theorem publicAnswer_steeringHidden (first second : View) (index : FixedKeyIndex
     exact congrArg (fun rest : PermutationOracle Garbling.EncIndex Block ×
       (BaseField → Block × Block) => randomOracleAnswer rest.2 value) sameRest
 
+/-! ### The empty transcript, and one index of a uniform family -/
+
+/-- The transcript a run starts from pins nothing. -/
+theorem emptyAssignment_injective : AssignmentInjective (fun _ => none) := by
+  intro _ _ _ pin
+  exact absurd pin (by simp)
+
+theorem pinnedCount_empty : pinnedCount (fun _ : Block => none) = 0 := by
+  have empty : pinnedDomain (fun _ : Block => none) = (∅ : Set Block) := by
+    ext input
+    simp [pinnedDomain]
+  rw [pinnedCount, empty, Set.ncard_empty]
+
+/-- Before any query the conditional law of the tracked permutation is the uniform law.
+This is the bridge from a game that samples the permutation family to `compatibleLaw_run`. -/
+theorem compatibleLaw_empty :
+    compatibleLaw (fun _ => none) = PMF.uniformOfFintype (Equiv Block Block) := by
+  have holds : ∀ permutation : Equiv Block Block, Compatible (fun _ => none) permutation := by
+    intro _ _ _ pin
+    exact absurd pin (by simp)
+  haveI nonempty : Nonempty {permutation : Equiv Block Block //
+      Compatible (fun _ => none) permutation} := ⟨⟨Equiv.refl Block, holds _⟩⟩
+  rw [compatibleLaw_eq _ nonempty]
+  exact uniformOfFintype_map_bijection (Equiv.subtypeUnivEquiv holds)
+
+/-- The permutation family with one index replaced. -/
+def setOracleAt (oracle : PermutationOracle FixedKeyIndex Block) (index : FixedKeyIndex)
+    (permutation : Equiv Block Block) : PermutationOracle FixedKeyIndex Block :=
+  ⟨fun other => if other = index then permutation else oracle.permutation other⟩
+
+theorem setPermutation_eq (state : State) (index : FixedKeyIndex)
+    (permutation : Equiv Block Block) :
+    setPermutation state index permutation =
+      { state with view := (setOracleAt state.view.1 index permutation, state.view.2) } := rfl
+
+theorem setOracleAt_permutation (oracle : PermutationOracle FixedKeyIndex Block)
+    (index : FixedKeyIndex) (permutation : Equiv Block Block) :
+    (setOracleAt oracle index permutation).permutation index = permutation := by
+  show (if index = index then permutation else oracle.permutation index) = permutation
+  rw [if_pos rfl]
+
+theorem setOracleAt_self (oracle : PermutationOracle FixedKeyIndex Block)
+    (index : FixedKeyIndex) : setOracleAt oracle index (oracle.permutation index) = oracle := by
+  refine congrArg PermutationOracle.mk (funext fun other => ?_)
+  show (if other = index then oracle.permutation index else oracle.permutation other) =
+    oracle.permutation other
+  by_cases same : other = index
+  · rw [if_pos same, same]
+  · rw [if_neg same]
+
+/-- Exchanging one index of a permutation family with a separate sample is an involution. -/
+def swapOracleAt (index : FixedKeyIndex) :
+    PermutationOracle FixedKeyIndex Block × Equiv Block Block ≃
+      PermutationOracle FixedKeyIndex Block × Equiv Block Block where
+  toFun pair := (setOracleAt pair.1 index pair.2, pair.1.permutation index)
+  invFun pair := (setOracleAt pair.1 index pair.2, pair.1.permutation index)
+  left_inv pair := by
+    obtain ⟨oracle, permutation⟩ := pair
+    refine Prod.ext ?_ (setOracleAt_permutation oracle index permutation)
+    show setOracleAt (setOracleAt oracle index permutation) index (oracle.permutation index) =
+      oracle
+    refine congrArg PermutationOracle.mk (funext fun other => ?_)
+    show (if other = index then oracle.permutation index else
+      (setOracleAt oracle index permutation).permutation other) = oracle.permutation other
+    by_cases same : other = index
+    · rw [if_pos same, same]
+    · rw [if_neg same]
+      show (if other = index then permutation else oracle.permutation other) =
+        oracle.permutation other
+      rw [if_neg same]
+  right_inv pair := by
+    obtain ⟨oracle, permutation⟩ := pair
+    refine Prod.ext ?_ (setOracleAt_permutation oracle index permutation)
+    show setOracleAt (setOracleAt oracle index permutation) index (oracle.permutation index) =
+      oracle
+    refine congrArg PermutationOracle.mk (funext fun other => ?_)
+    show (if other = index then oracle.permutation index else
+      (setOracleAt oracle index permutation).permutation other) = oracle.permutation other
+    by_cases same : other = index
+    · rw [if_pos same, same]
+    · rw [if_neg same]
+      show (if other = index then permutation else oracle.permutation other) =
+        oracle.permutation other
+      rw [if_neg same]
+
+/-- A uniform permutation family with one index freshly resampled is a uniform permutation
+family: the tracked index may be sampled after everything else. -/
+theorem uniform_bind_setOracleAt {Outcome : Type} (index : FixedKeyIndex)
+    (continuation : PermutationOracle FixedKeyIndex Block → PMF Outcome) :
+    ((PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+        (PMF.uniformOfFintype (Equiv Block Block)).bind fun permutation =>
+          continuation (setOracleAt oracle index permutation)) =
+      (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind continuation := by
+  rw [uniformOfFintype_bind_prod]
+  have swapped := uniformOfFintype_bind_equiv (swapOracleAt index)
+    fun pair : PermutationOracle FixedKeyIndex Block × Equiv Block Block => continuation pair.1
+  simp only [swapOracleAt, Equiv.coe_fn_mk] at swapped
+  have unprod : ((PMF.uniformOfFintype
+        (PermutationOracle FixedKeyIndex Block × Equiv Block Block)).bind fun pair =>
+      continuation pair.1) =
+      (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+        (PMF.uniformOfFintype (Equiv Block Block)).bind fun _ => continuation oracle :=
+    (uniformOfFintype_bind_prod
+      fun oracle (_ : Equiv Block Block) => continuation oracle).symm
+  rw [swapped, unprod]
+  simp only [PMF.bind_const]
+
 end
 
 end Kriterion.ArgoMAC.Security
