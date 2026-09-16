@@ -11,6 +11,12 @@ Slice 3d closed P5 (the deferral, `Proof/Deferred.lean`), P9a (`R(b)` as a `PMF 
 corrected the accounting of §4 (crude `K ≤ 10`, see below). The deferral was the only place the
 architecture could have been unformalizable; it is a plain `ENNReal.tsum_comm` argument.
 
+Slice 3e closed the per-coordinate half of P6 (`Proof/Distance.lean`: the total-difference tools,
+the mask law and the hash fiber law) and the structural core of P7
+(`Proof/DeferredSteering.lean`: the programmed reference view releases every selected output, the
+steering is the shift at `(x7, 0)`, and the double programming is the reference programming on a
+reparametrised permutation). Nothing in step 7 contradicted the chain.
+
 ## 1. The correction that drives the architecture
 
 The slice-3b analysis of the three cases (A off-curve, B on-curve/bit false, C on-curve/bit
@@ -165,6 +171,29 @@ permutation are `forwardHidden`/`inverseHidden` (`k = 2`, `hiddenLabels_card`), 
 stage-2 run does not read) needs the per-index involution `setKeyLabel` at that one label
 instead of the whole key; `uniform_bind_setKeyLabel` / `uniform_keyLabel_mem` are in place.
 
+**Corrections from slice 3e.**
+
+* The reparametrisation of step 7 touches only the steering-gate slots that the reference game
+  actually programs: the **three** hash slots when the steering bit is `false`, the **two** pad
+  slots when it is `true` — never five at once (`steerPrograms`, `programIndices_steerPrograms`).
+  The hidden set of the swap is still 2 points per direction (`{π°⁻¹(r), π°⁻¹(s)}` forward,
+  `{r, s}` inverse), so `K ≤ 10` is unchanged.
+* `programIndices_steerPrograms` needs `π° ℓ ≠ r` and `π° ℓ ≠ s` at those slots (otherwise the
+  transposition of the honest programming is the identity and the two programmings do not
+  compose). This is a **one-time** event, not a per-query one: `r` and `s` are fresh uniform
+  chunks, so its mass is at most `6/2^128 < 2^-125`. Add it to `ε₀`, which stays below `2^-119`.
+* `bind_apply_sub_le` bounds an outcome probability by the **total difference** (twice the total
+  variation), so the one-time terms of §4 are charged at `2/p` for the mask and `2 p/2^384` per
+  gate. Both are already inside the `ε₀ ≤ 2^-101` the arithmetic tail needs.
+* The 384-bit-vs-field replacement is a replacement of a **product** of 1270 independent
+  coordinates, so it needs a tensorisation step that the per-coordinate fact does not supply.
+  The recipe: `HashFibers o ≃ Π gates, HashFiber (o gate)` (`Equiv.subtypePiEquivPi`), so both
+  laws are products of one coordinate law; define the interpolating laws by
+  `PMF.ofFintype (fun values => ∏ gate, lawOf gate (values gate))` (sum-to-one by
+  `Finset.prod_univ_sum` and `Fintype.piFinset_univ`), and swap one coordinate at a time by
+  `Finset` induction, each step costing `hashFiber_total_difference` by the same product-sum
+  exchange. That is the open half of P6.
+
 Two things the slice-3b analysis had that this chain does **not** need: hiding all 1270
 unselected-label values by an explicit shift (absorbed by `P4`), and the `(2^128 − q)`
 denominators (the `R`-side bounds sample the hidden label fresh, so each log entry hits with
@@ -179,8 +208,8 @@ probability exactly `k/2^128`).
 | P3 | independence bad-bounds: union bound over a log (`hidden_label_bound`); one label of a uniform key is a uniform block (`setKeyLabel` involution, `map_keyLabel_uniform`, `uniform_keyLabel_mem`); hidden sets of one programmed permutation, 2 per direction (`forwardHidden`, `inverseHidden`, `hiddenLabels_card`, `publicAnswer_programIndices_single`); stage-1 bound with the key sampled up front (`firstStage_key_deferred`, `firstStage_hidden_le`) | `Proof/Hidden.lean` | **stage 1 done**; stage-2 (unselected-label) bound open |
 | P4 | static bijection raw ↔ middle; `c0` affine in `mask`; visible law uniform off-curve, shift law on-curve | `Proof/Reference.lean`: `middleEquiv`, `Coordinates.table_c0_eq`, `visibleCoordinates_offCurve`, `visibleCoordinates_onCurve` | **done** |
 | P5 | deferred sampling: transfer form `twoStageGame_congr` (equal joint laws of `(view, rest r)` per first-stage result ⇒ equal games) and factored form `twoStageGame_eq_deferredGame`; both by `tsum_map_mul` + `ENNReal.tsum_comm` | `Proof/Deferred.lean`: `twoStageGame`, `deferredGame`, `twoStageGame_apply`, `twoStageGame_congr`, `twoStageGame_eq_deferredGame`, `map_view_of_joint` | **done** |
-| P6 | TV facts: `U(F*)` vs `U(F)` = `1/p`; 384-bit uniform vs (`U(F)` then `uniformHashFiber`) ≤ `p/2^384` via `Nat.count_modEq_card`; product/bind subadditivity from VCVio `tvDist_bind_left_le`/`tvDist_bind_right_le`/`tvDist_map_le` | — | open |
-| P7 | `steer` in deferred form: on-curve `wanted = o x7 0 + (c/s − u)`; the hash branch equals `R`'s programming at `(x7,0)` after `π° ↦ swap(r₁,r₂)∘π°`; the pad branch equals `R`'s pad programming | uses `Proof/Steering.lean` (`steer_release`, `decrypt_programmed`, `hashToField_programmed`) | open |
+| P6 | TV facts: total difference `∑ |law₁ − law₂|` with triangle inequality and both bind sub-additivities (`bind_apply_sub_le` swaps the sampled law, `bind_apply_sub_le_of_le` swaps the continuation); `U(F*)` vs `U(F)` total difference `2/p`; one 384-bit digest vs (`U(F)` then `uniformHashFiber`) total difference `≤ p/2^384` (fiber sizes are within one residue block of `2^384/p`, by the two injections `fiberElement`/`fiberIndex`) | `Proof/Distance.lean`: `totalDifference`, `totalDifference_triangle`, `bind_apply_sub_le`, `bind_apply_sub_le_of_le`, `mask_total_difference`, `card_hashFiber_lower`/`_upper`, `count_mul_difference_le`, `hashFiber_total_difference` | **per coordinate done**; the 1270-gate product (tensorisation) open |
+| P7 | `steer` in deferred form: the programmed reference view releases every selected output and hence `bridgeKey + mask·curveGap`, so on-curve `current = u` and `wanted = o x7 0 + (c/s − u)` — the steering is `shiftMiddle (c/s − u)` on the visible data; the double programming (honest, then steered) of the steering gate is `R`'s single programming of the shifted outputs on `π° ↦ swap(honest range, steered range) ∘ π°` | `Proof/DeferredSteering.lean`: `swap_trans_swap`, `programmed_programmed`, `programIndices_programIndices`, `hashToField_programSelected`, `decrypt_programSelected`, `evaluate_programSelected`, `curveEvaluate_programSelected`, `steerTo`, `steer_programSelected`, `steerPrograms`, `programIndices_steerPrograms` | **core done**; the `programAll` → `programIndices` bridge and the fiber marginal open |
 | P8 | arithmetic tail `ε ≤ K q/2^128 + ε₀`, `K ≤ 2^28`, `ε₀ ≤ 2^-101` ⇒ `WorkPerAdvantage 100 (q+1) ε`; `advantage ≤ 1` | `Proof/Reference.lean`: `workPerAdvantage_of_le`, `advantage_le_one` | **done** |
 | P9a | `R(b)` as a `PMF Bool`: `programIndices` (unconditional partial programming), `gateKey`/`selectedLabel`/`slotRange`/`tableRow`, `selectedPrograms`, `HashFibers`/`uniformHashFibers`, `programSelected`, `referenceStage2`, `referenceGame`; `run_idealOracle_support` (a run changes only the log); `selectedPrograms_hash`/`_pad`/`_label` | `Proof/ReferenceGame.lean` | **done** |
 | P9b | unfold `idealGame` for `hybridSimulator` and `simulator` into the shape of §4 (as `hybridGame_eq_core` does), marginalize unused tape fields (`uniform_bind_setBridge` pattern) | `Proof/Privacy.lean` has the hybrid half | open |
@@ -209,3 +238,11 @@ shows a logged run depends only on the view and the initial log) and `slotBit`/`
   `Proof/Hidden.lean`.
 * Chunk convention for a 384-bit hash / 256-bit pad at slot `j`: `extractLsb' (128 * j) 128`
   (`slotRange`), matching `hashRequests`/`padRequests`.
+* `field_simp` and `ring` loop or hit `maximum recursion depth` on the numeral `2 ^ 384`. Prove the
+  arithmetic on abstract reals first (`count_mul_difference_le`) and instantiate afterwards.
+* `rw` will not see through a definitional unfolding such as `tableRows table .x3 = table.x3` or
+  `gateMac mac .x3 = mac.x`. Use `set` for the long programmed-oracle term and state one `have`
+  per adaptor in the syntactic form the goal has; the defeq proof term still typechecks
+  (`curveEvaluate_programSelected`).
+* `PermutationOracle` has no `ext` lemma; close an oracle equality with
+  `congrArg PermutationOracle.mk (funext …)`.
