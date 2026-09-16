@@ -301,6 +301,83 @@ theorem shiftedOracle_eq_shiftSteering (key : InputMacKey) (input : AffineInput)
         (setSteering hash fibers)) oracle := by
   rw [shiftedOracle, shiftSteering_eq_setSteering]
 
+/-! ### The two second stages under one sample -/
+
+/-- A sampled fiber family realises the selected outputs. -/
+theorem fiberValues_of_mem_uniformHashFibers (outputs : GateValues BaseField)
+    (fibers : GateValues (BitVec 384)) (member : fibers ∈ (uniformHashFibers outputs).support)
+    (adaptor : CurveAdaptor) (position : Fin coordinateBitCount) :
+    (((fibers adaptor position).toNat : Nat) : BaseField) = outputs adaptor position := by
+  rw [uniformHashFibers, PMF.support_map] at member
+  obtain ⟨⟨values, property⟩, _, rfl⟩ := member
+  exact property adaptor position
+
+/-- The shifted reference round's second stage, with its single fiber sample split into the
+honest family and the steering gate's own resample. The split is exact: resampling the
+steering gate's fiber on top of the honest family is the fiber family of the shifted
+outputs. -/
+theorem releasedStageTwo_shifted (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (view : View) (key : InputMacKey) (carrier : NonZeroBase) (table : CurveMembership.Table)
+    (outputs : GateValues BaseField) (shift : BaseField)
+    (outcome : (AffineInput × adversary.State) × List Query) :
+    releasedStageTwo adversary parameter auxiliary view key carrier table
+        (shiftSteering shift outputs) outcome =
+      (uniformHashFibers outputs).bind fun fibers =>
+        (uniformHashFiber (outputs .x7 0 + shift)).bind fun hash =>
+          (hybridStageTwo adversary parameter auxiliary (table, carrierBits carrier)
+              outcome.1.1 outcome.1.2
+              (stageTwoState (shiftedOracle key outcome.1.1 outputs (tableRow table) fibers
+                (outputs .x7 0 + shift) hash view.1, view.2) outcome.2 table carrier key)).map
+            Prod.fst := by
+  rw [releasedStageTwo, shiftSteering_eq_setSteering,
+    ← uniformHashFibers_setSteering outputs (outputs .x7 0 + shift), PMF.bind_bind]
+  refine congrArg (PMF.bind _) (funext fun fibers => ?_)
+  rw [PMF.bind_map]
+  refine congrArg (PMF.bind _) (funext fun hash => ?_)
+  show (selectedStageTwo adversary parameter auxiliary (table, carrierBits carrier) outcome.1.1
+      outcome.1.2 (setSteering (outputs .x7 0 + shift) outputs) (setSteering hash fibers)
+      (stageTwoState view outcome.2 table carrier key)).map Prod.fst = _
+  rw [selectedStageTwo, programSelected_stageTwoState]
+  rfl
+
+/-- The steered reference round's second stage, on the curve and on a good log, with its two
+fiber samples written as the honest family and the steering gate's resample -- the same two
+samples as the shifted round, in the same order. The only difference between the two second
+stages is now the view: doubly programmed here, singly programmed there. -/
+theorem steeredReleasedStageTwo_double [FieldCertificate] [GroupCertificate]
+    (scalar : NonZeroScalar) (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (view : View) (key : InputMacKey) (carrier : NonZeroBase) (bridgeKey : BaseField)
+    (raw : Coordinates) (outcome : (AffineInput × adversary.State) × List Query)
+    (onCurve : curveGap outcome.1.1 = 0)
+    (fresh : ∀ fibers ∈ (uniformHashFibers (encodeCoordinates outcome.1.1 raw).hash).support,
+      ∀ hash ∈ (uniformHashFiber ((encodeCoordinates outcome.1.1 raw).hash .x7 0 +
+        (hybridBridge scalar carrier - bridgeKey))).support,
+      ∀ request ∈ steerRequests (raw.table bridgeKey key)
+        (selectedLabel key outcome.1.1 .x7 0) outcome.1.1
+        ((encodeCoordinates outcome.1.1 raw).hash .x7 0 +
+          (hybridBridge scalar carrier - bridgeKey)) hash,
+      request.Fresh outcome.2 (programIndices (selectedPrograms key outcome.1.1
+        (encodeCoordinates outcome.1.1 raw).hash (tableRow (raw.table bridgeKey key)) fibers)
+        view.1)) :
+    steeredReleasedStageTwo scalar adversary parameter auxiliary view key carrier
+        (raw.table bridgeKey key) (encodeCoordinates outcome.1.1 raw).hash outcome =
+      (uniformHashFibers (encodeCoordinates outcome.1.1 raw).hash).bind fun fibers =>
+        (uniformHashFiber ((encodeCoordinates outcome.1.1 raw).hash .x7 0 +
+            (hybridBridge scalar carrier - bridgeKey))).bind fun hash =>
+          (hybridStageTwo adversary parameter auxiliary
+              (raw.table bridgeKey key, carrierBits carrier) outcome.1.1 outcome.1.2
+              (stageTwoState (doubleSteeredOracle key outcome.1.1
+                (encodeCoordinates outcome.1.1 raw).hash (tableRow (raw.table bridgeKey key))
+                fibers ((encodeCoordinates outcome.1.1 raw).hash .x7 0 +
+                  (hybridBridge scalar carrier - bridgeKey)) hash view.1, view.2)
+                outcome.2 (raw.table bridgeKey key) carrier key)).map Prod.fst := by
+  rw [steeredReleasedStageTwo]
+  refine bind_congr_support fun fibers member => ?_
+  rw [selectedSimulatedStageTwo_double scalar adversary parameter auxiliary view key carrier
+    bridgeKey raw outcome.2 outcome.1.1 outcome.1.2 fibers
+    (fiberValues_of_mem_uniformHashFibers _ fibers member) onCurve (fresh fibers member),
+    PMF.map_bind]
+
 end
 
 end Kriterion.ArgoMAC.Security
