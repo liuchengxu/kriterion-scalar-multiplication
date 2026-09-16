@@ -962,6 +962,170 @@ theorem advantage_secondView_le {Data : Type} (adversary : Adversary) (parameter
     refine le_trans (ENNReal.toReal_mono (by finiteness) massLe) ?_
     exact le_of_eq (toReal_two_budget _)
 
+/-! ### The H side of the chain, assembled -/
+
+/-- The key-free sample of the H side: the tape's unread oracles, the unprogrammed
+fixed-key oracle, the fresh per-gate digests and pads, the curve coordinates and the
+carrier. -/
+abbrev HybridDatum :=
+  Garbling.Randomness × PermutationOracle FixedKeyIndex Block ×
+    (GateValues (BitVec 384) × GateValues BitAdaptor.Ciphertext) ×
+    (NonZeroBase × BaseField × BaseField) × NonZeroBase
+
+/-- The law of the key-free sample. -/
+def hybridData : PMF HybridDatum :=
+  (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+    (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+      (PMF.uniformOfFintype (GateValues (BitVec 384) ×
+          GateValues BitAdaptor.Ciphertext)).bind fun secrets =>
+        (PMF.uniformOfFintype (NonZeroBase × BaseField × BaseField)).bind fun curve =>
+          (PMF.uniformOfFintype NonZeroBase).map fun carrier =>
+            (tape, oracle, secrets, curve, carrier)
+
+theorem hybridData_bind {Outcome : Type} (continuation : HybridDatum → PMF Outcome) :
+    hybridData.bind continuation =
+      (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+        (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+          (PMF.uniformOfFintype (GateValues (BitVec 384) ×
+              GateValues BitAdaptor.Ciphertext)).bind fun secrets =>
+            (PMF.uniformOfFintype (NonZeroBase × BaseField × BaseField)).bind fun curve =>
+              (PMF.uniformOfFintype NonZeroBase).bind fun carrier =>
+                continuation (tape, oracle, secrets, curve, carrier) := by
+  unfold hybridData
+  simp only [PMF.bind_bind, PMF.bind_map, Function.comp_def]
+
+/-- The unprogrammed view of one sample. -/
+def hybridView (datum : HybridDatum) : View :=
+  (datum.2.1, datum.1.encOracle, datum.1.hashOracle)
+
+/-- The fresh digests of one sample. -/
+def hybridDigests (datum : HybridDatum) : GateValues (BitVec 384) := datum.2.2.1.1
+
+/-- The fresh pads of one sample. -/
+def hybridPads (datum : HybridDatum) : GateValues BitAdaptor.Ciphertext := datum.2.2.1.2
+
+/-- The nonzero curve mask of one sample. -/
+def hybridMask (datum : HybridDatum) : BaseField := datum.2.2.2.1.1.value
+
+def hybridR1 (datum : HybridDatum) : BaseField := datum.2.2.2.1.2.1
+
+def hybridR2 (datum : HybridDatum) : BaseField := datum.2.2.2.1.2.2
+
+/-- The carrier of one sample. -/
+def hybridCarrier (datum : HybridDatum) : NonZeroBase := datum.2.2.2.2
+
+/-- The reference coordinates of one sample. -/
+def hybridRaw (datum : HybridDatum) : Coordinates :=
+  digestedRaw (hybridMask datum) (hybridR1 datum) (hybridR2 datum) (hybridDigests datum)
+    (hybridPads datum)
+
+/-- The bridge key of one sample: the carrier divided by the scalar. -/
+def hybridBridgeKey [FieldCertificate] (scalar : NonZeroScalar) (datum : HybridDatum) :
+    BaseField :=
+  ((mulScalar scalar).symm (hybridCarrier datum)).value
+
+/-- The public value of one sample. It does not depend on the label key. -/
+def hybridCircuit [FieldCertificate] (scalar : NonZeroScalar) (datum : HybridDatum) :
+    Garbling.Public :=
+  (Coordinates.table (hybridBridgeKey scalar datum) witnessTape.inputMacKey (hybridRaw datum),
+    carrierBits (hybridCarrier datum))
+
+theorem hybridCircuit_table [FieldCertificate] (scalar : NonZeroScalar) (key : InputMacKey)
+    (datum : HybridDatum) :
+    (hybridCircuit scalar datum).1 =
+      Coordinates.table (hybridBridgeKey scalar datum) key
+        (digestedRaw (hybridMask datum) (hybridR1 datum) (hybridR2 datum) (hybridDigests datum)
+          (hybridPads datum)) :=
+  Coordinates.table_key _ _ _ _
+
+/-- The H side after the first hop, in the shape the two oracle hops consume. -/
+theorem hybridGame_eq_used [FieldCertificate] [GroupCertificate] (adversary : Adversary)
+    (parameter : Nat) (scalar : NonZeroScalar) (auxiliary : Unit) :
+    idealGame Garbling.garbledCircuit (fun _ => ciphertextBytes) (hybridSimulator scalar)
+        idealOracle adversary parameter scalar auxiliary =
+      (PMF.uniformOfFintype InputMacKey).bind fun key => hybridData.bind fun datum =>
+        (loggedFirstStage adversary parameter auxiliary (hybridCircuit scalar datum)
+            (programIndices (usedPrograms key (freshValue (hybridDigests datum)
+                (hybridPads datum))) (hybridView datum).1,
+              (hybridView datum).2)).bind fun outcome =>
+          (usedStageTwo adversary parameter auxiliary (hybridCircuit scalar datum) outcome.1.1
+            outcome.1.2 key (freshValue (hybridDigests datum) (hybridPads datum))
+            (hybridView datum) outcome.2 (hybridCarrier datum)).map Prod.fst := by
+  rw [hybridGame_eq_fresh,
+    PMF.bind_comm (PMF.uniformOfFintype Garbling.Randomness) (PMF.uniformOfFintype InputMacKey)]
+  refine congrArg (PMF.bind _) (funext fun key => ?_)
+  rw [hybridData_bind]
+  refine congrArg (PMF.bind _) (funext fun tape => ?_)
+  refine congrArg (PMF.bind _) (funext fun oracle => ?_)
+  refine congrArg (PMF.bind _) (funext fun secrets => ?_)
+  refine congrArg (PMF.bind _) (funext fun curve => ?_)
+  refine congrArg (PMF.bind _) (funext fun carrier => ?_)
+  unfold hybridFresh hybridTwoStage
+  rw [show (Coordinates.table (((mulScalar scalar).symm carrier).value) key
+        ⟨curve.1.value, curve.2.1, curve.2.2, digestField secrets.1, secrets.2⟩,
+        carrierBits carrier) =
+      hybridCircuit scalar (tape, oracle, secrets, curve, carrier) from
+    congrArg (fun table => (table, carrierBits carrier))
+      (Coordinates.table_key _ _ _ _)]
+  rfl
+
+/-- The H side after both oracle hops: the first stage runs on the unprogrammed view and
+the second stage on the view programmed at the selected labels only, with the fresh digests
+in place of the reference game's fiber sample. -/
+def digestedReference [FieldCertificate] (scalar : NonZeroScalar) (adversary : Adversary)
+    (parameter : Nat) (auxiliary : Unit) : PMF Bool :=
+  (PMF.uniformOfFintype InputMacKey).bind fun key => hybridData.bind fun datum =>
+    (loggedFirstStage adversary parameter auxiliary (hybridCircuit scalar datum)
+        (hybridView datum)).bind fun outcome =>
+      (selectedStageTwo adversary parameter auxiliary (hybridCircuit scalar datum) outcome.1.1
+        outcome.1.2 (encodeCoordinates outcome.1.1 (hybridRaw datum)).hash
+        (hybridDigests datum)
+        (stageTwoState (hybridView datum) outcome.2 (hybridCircuit scalar datum).1
+          (hybridCarrier datum) key)).map Prod.fst
+
+/-- Steps 1 and 3 of the chain on the H side: the hybrid game is within `4 (q₁ + q₂) / 2 ^ 128`
+of the reference-shaped game of its own bridge key, with the fresh digests still in place of
+the reference game's fiber sample and the nonzero mask still in place of the uniform one. -/
+theorem advantage_hybridGame_digestedReference_le [FieldCertificate] [GroupCertificate]
+    (adversary : Adversary) (parameter : Nat) (scalar : NonZeroScalar) (auxiliary : Unit) :
+    advantage
+        (idealGame Garbling.garbledCircuit (fun _ => ciphertextBytes) (hybridSimulator scalar)
+          idealOracle adversary parameter scalar auxiliary)
+        (digestedReference scalar adversary parameter auxiliary) ≤
+      4 * ((adversary.firstQueryBudget parameter +
+        adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 := by
+  have firstHop := advantage_firstView_le adversary parameter auxiliary hybridData hybridView
+    (hybridCircuit scalar) hybridCarrier
+    (fun datum => freshValue (hybridDigests datum) (hybridPads datum))
+    fun key datum outcome => (usedStageTwo adversary parameter auxiliary
+      (hybridCircuit scalar datum) outcome.1.1 outcome.1.2 key
+      (freshValue (hybridDigests datum) (hybridPads datum)) (hybridView datum) outcome.2
+      (hybridCarrier datum)).map Prod.fst
+  have secondHop := advantage_secondView_le adversary parameter auxiliary hybridData hybridView
+    (hybridCircuit scalar) hybridCarrier (hybridBridgeKey scalar) hybridMask hybridR1 hybridR2
+    hybridDigests hybridPads (hybridCircuit_table scalar)
+  rw [← hybridGame_eq_used] at firstHop
+  refine le_trans (advantage_trans _ _ _ _ _ firstHop secondHop) ?_
+  have budgets : (adversary.firstQueryBudget parameter : ℝ) ≤
+      ((adversary.firstQueryBudget parameter +
+        adversary.secondQueryBudget parameter : Nat) : ℝ) := by
+    rw [Nat.cast_add]
+    exact le_add_of_nonneg_right (Nat.cast_nonneg _)
+  have step : 2 * (adversary.firstQueryBudget parameter : ℝ) / 2 ^ 128 ≤
+      2 * ((adversary.firstQueryBudget parameter +
+        adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 := by
+    gcongr
+  calc 2 * (adversary.firstQueryBudget parameter : ℝ) / 2 ^ 128 +
+        2 * ((adversary.firstQueryBudget parameter +
+          adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128
+      ≤ 2 * ((adversary.firstQueryBudget parameter +
+            adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 +
+          2 * ((adversary.firstQueryBudget parameter +
+            adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 :=
+        add_le_add step le_rfl
+    _ = 4 * ((adversary.firstQueryBudget parameter +
+          adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 := by ring
+
 end
 
 end Kriterion.ArgoMAC.Security
