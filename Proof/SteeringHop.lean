@@ -807,6 +807,80 @@ theorem lazy_shiftedReferenceRound [FieldCertificate] (bridgeKey : BaseField)
         (shiftedOutputs scalar (fun _ => bridgeKey) carrier outcome.1.1
           (encodeCoordinates outcome.1.1 raw).hash) outcome)
 
+/-! ### Averaging a pointwise advantage bound over an infinite sample -/
+
+/-- A uniform pointwise advantage bound survives an outer sample, with **no** finiteness
+assumption on the sample type.
+
+`advantage_bind_le_of_le` is stated with `[Fintype Sample]`, which the lazy family run's
+output type does not have -- it carries a `List Query` and the adversary's state. The charge
+has to average its per-transcript bound over exactly that type, so it needs this form. The
+proof avoids real summability altogether: the pointwise bound is turned into the two
+`ENNReal` inequalities `p true ≤ q true + ofReal bound`, which survive an unconditional
+`ENNReal` tsum. -/
+theorem advantage_bind_le_pointwise {Sample : Type} (law : PMF Sample)
+    (first second : Sample → PMF Bool) (bound : ℝ)
+    (pointwise : ∀ sample, advantage (first sample) (second sample) ≤ bound) :
+    advantage (law.bind first) (law.bind second) ≤ bound := by
+  obtain ⟨witness⟩ : Nonempty Sample := by
+    rcases isEmpty_or_nonempty Sample with empty | nonempty
+    · exact absurd (PMF.tsum_coe law) (by rw [tsum_empty]; exact zero_ne_one)
+    · exact nonempty
+  have nonneg : 0 ≤ bound := by
+    have step := pointwise witness
+    unfold advantage at step
+    exact le_trans (abs_nonneg _) step
+  have pointwiseShift : ∀ (left right : Sample → PMF Bool),
+      (∀ sample, advantage (left sample) (right sample) ≤ bound) →
+      ∀ sample, (left sample) true ≤ (right sample) true + ENNReal.ofReal bound := by
+    intro left right step sample
+    have base := step sample
+    unfold advantage at base
+    have le : ((left sample) true).toReal ≤ ((right sample) true).toReal + bound := by
+      have half := (abs_sub_le_iff.mp base).1
+      linarith
+    have rewrite : (right sample) true + ENNReal.ofReal bound =
+        ENNReal.ofReal (((right sample) true).toReal + bound) := by
+      rw [ENNReal.ofReal_add ENNReal.toReal_nonneg nonneg,
+        ENNReal.ofReal_toReal (PMF.apply_ne_top _ _)]
+    rw [rewrite]
+    exact (ENNReal.le_ofReal_iff_toReal_le (PMF.apply_ne_top _ _)
+      (add_nonneg ENNReal.toReal_nonneg nonneg)).mpr le
+  have shift : ∀ (left right : Sample → PMF Bool),
+      (∀ sample, (left sample) true ≤ (right sample) true + ENNReal.ofReal bound) →
+      (law.bind left) true ≤ (law.bind right) true + ENNReal.ofReal bound := by
+    intro left right step
+    rw [PMF.bind_apply, PMF.bind_apply]
+    calc ∑' sample, law sample * (left sample) true
+        ≤ ∑' sample, law sample * ((right sample) true + ENNReal.ofReal bound) :=
+          ENNReal.tsum_le_tsum fun sample =>
+            mul_le_mul_of_nonneg_left (step sample) zero_le'
+      _ = ∑' sample, (law sample * (right sample) true +
+            law sample * ENNReal.ofReal bound) := tsum_congr fun sample => mul_add _ _ _
+      _ = (∑' sample, law sample * (right sample) true) +
+            ∑' sample, law sample * ENNReal.ofReal bound := ENNReal.tsum_add
+      _ = (∑' sample, law sample * (right sample) true) + ENNReal.ofReal bound := by
+          rw [ENNReal.tsum_mul_right, PMF.tsum_coe, one_mul]
+  have convert : ∀ (left right : Sample → PMF Bool),
+      (law.bind left) true ≤ (law.bind right) true + ENNReal.ofReal bound →
+      ((law.bind left) true).toReal - ((law.bind right) true).toReal ≤ bound := by
+    intro left right step
+    have finite : (law.bind right) true + ENNReal.ofReal bound ≠ ⊤ :=
+      ENNReal.add_ne_top.mpr ⟨PMF.apply_ne_top _ _, ENNReal.ofReal_ne_top⟩
+    have mono := ENNReal.toReal_mono finite step
+    rw [ENNReal.toReal_add (PMF.apply_ne_top _ _) ENNReal.ofReal_ne_top,
+      ENNReal.toReal_ofReal nonneg] at mono
+    linarith
+  have backward : ∀ sample, advantage (second sample) (first sample) ≤ bound := by
+    intro sample
+    have step := pointwise sample
+    unfold advantage at step ⊢
+    rwa [abs_sub_comm]
+  unfold advantage
+  exact abs_sub_le_iff.mpr
+    ⟨convert first second (shift first second (pointwiseShift first second pointwise)),
+      convert second first (shift second first (pointwiseShift second first backward))⟩
+
 end
 
 end Kriterion.ArgoMAC.Security
