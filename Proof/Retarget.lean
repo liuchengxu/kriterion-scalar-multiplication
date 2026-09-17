@@ -1,4 +1,10 @@
 /-
+**SUPERSEDED — retained for the log; the live proof does not use this file.** Every eager
+reparametrisation of the permutation proved circular, because the site data it needs depends on
+the adaptively chosen input. The live route charges the hop as a *label* event instead
+(`uniform_keyLabel_steeringBlocked_le`). Everything below is proved; nothing in the live proof
+consumes it.
+
 This file proves the reparametrisation that removes an *intermediate*
 programming of one fixed-key permutation.
 

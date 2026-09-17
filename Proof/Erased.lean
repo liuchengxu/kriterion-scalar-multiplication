@@ -1,4 +1,11 @@
 /-
+**PARTLY SUPERSEDED — retained for the log.** Live here: `compatibleLaw_programmed` and
+`compatibleLaw_double`, which underpin `familyLaw_double` and hence the whole live charge. Dead:
+the `erased_touch_le` / `toOuterMeasure_exists_mem_keyed_le` / `uniform_bind_setOracleAt` /
+`uniform_run_compatibleLaw` / `uniform_keyLabel_transcript_le` cluster and `steeringHidden` /
+`publicAnswer_steeringHidden` — they served the retracted four-point census, which the label
+charge replaced.
+
 This file prices the one bad point of the steering hop that no label deferral
 can reach: the image the reference game's programming erases.
 

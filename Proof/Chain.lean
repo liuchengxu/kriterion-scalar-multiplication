@@ -148,20 +148,22 @@ steps 5 and 6 -- `4 q / 2 ^ 128` per side, `8 q / 2 ^ 128` for the two sides tha
 already machine-checked (`advantage_hybridGame_referenceGame_le` and
 `advantage_simulatedGame_steeredReferenceGame_le` each supply `4 q / 2 ^ 128`).
 
-The steering hop is **not** bounded on a label: three of its four bad points are hit only
-by evaluating or inverting the *unprogrammed* permutation at a point the transcript has
-not pinned, and conditionally on the transcript each of those is uniform over at least
-`2 ^ 128 - q` values; the fourth is a guess of one 128-bit chunk of a hash-fiber sample,
-whose largest point mass is above `1 / 2 ^ 128` because the fiber has about
-`2 ^ 384 / p` elements, not a power of two. Charging `1 / (2 ^ 128 - q) ≤ 2 / 2 ^ 128` for
-the first three (legitimate for `q < 2 ^ 127`; for `q ≥ 2 ^ 127` the whole bound is free,
-since `8 q / 2 ^ 128 ≥ 4 ≥ 1` and every advantage is at most one) and `2 / 2 ^ 128` for
-the fourth gives `8 q / 2 ^ 128` for the hop.
+The steering hop **is** a label charge, and this reserve deliberately over-estimates it.
+The proved hop is `uniform_keyLabel_steeringBlocked_le` (`Proof/SteeringHop.lean`), which
+bounds it by `3 q₁ / 2 ^ 128`: the selected label is a uniform block the first stage never
+reads, and the bad event names three label values per point the first stage pinned -- summed
+over the indices, not multiplied by their number. Off that event the two second stages are
+*the same law* (`familyLaw_double`), so there is no second-stage charge at all.
+
+The reserve here is nevertheless `8 q / 2 ^ 128` for the hop -- a deliberate over-estimate of
+`3 q / 2 ^ 128` (legitimate for `q < 2 ^ 127`; for `q ≥ 2 ^ 127` the whole bound is free,
+since `8 q / 2 ^ 128 ≥ 4 ≥ 1` and every advantage is at most one) -- plus a `6 / 2 ^ 128`
+one-time term that the final route does not spend.
 
 So `8 + 8 = 16`. `workPerAdvantage_of_le` proves the arithmetic tail for **any**
-`perQuery ≤ 2 ^ 28`, so the margin to the wall is still `2 ^ 24`; `16` is chosen with
-slack over the honest figure (about `12.2`) rather than tight, and no statement of the
-obligation depends on the value. -/
+`perQuery ≤ 2 ^ 28`, so the margin to the wall is still `2 ^ 24`; `16` carries slack over the
+proved `3 q₁` figure rather than being tight, and no statement of the obligation depends on
+the value. -/
 def chainPerQuery : ℝ := 16
 
 /-- The chain closes the obligation: the hops of the two sides at `2 q / 2 ^ 128` each and

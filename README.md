@@ -5,7 +5,7 @@ A Lean 4 proof that the design below inhabits `Kriterion.Solution` for
 
 | | |
 |---|---|
-| metric | **`ciphertext_bytes = 40768`** (baseline 9,699,931 — 238× smaller) |
+| metric | **`ciphertext_bytes = 40768`** (baseline `SebastianElvis/argomac-lean@711689cd` measures 9,699,931 — 238× smaller) |
 | checks | `layout`, `build`, `obligation`, `axioms`, `lint` — all **pass** |
 | axioms | `propext`, `Classical.choice`, `Quot.sound` only — no `sorryAx` |
 | `sorry` | **0** |
@@ -110,18 +110,13 @@ reported:
 
 ## Independent review
 
-Beyond the author's own checks, this commit was reviewed by **four independent lanes across two
-vendors**, all read-only and instructed to verify from source rather than trust the author's reports:
+Beyond the author's own checks, this tree was reviewed by **four independent lanes across three
+vendors** — two verification lanes and two falsification lanes — all read-only and instructed to
+verify from source rather than trust the author's reports. Both falsification lanes returned
+**SURVIVES**: neither could construct a formal defect. All lanes flag the scalar-disclosure
+limitation described above.
 
-- two **verification** lanes (Anthropic and OpenAI): both **ACCEPT-WITH-FLAG**, flagging the
-  scalar-disclosure / discrete-log issue above;
-- two **falsification** lanes (Anthropic and OpenAI), each told to attack the entry *and* the other
-  lane's review: both **SURVIVES**. Neither could construct a formal defect. Both independently mounted
-  the strongest available attack — a pointwise counterexample to the conditional-law bridge — and
-  showed it fails because that bridge equates *distributions* after averaging over compatible
-  permutations, not views under a shared permutation.
-
-No lane found a soundness hole, an undischarged privacy hypothesis, a charge against the wrong event, a
-disconnected metric, or an unproved instance premise. None re-derived the whole probability development
-line by line; the soundness of that rests on the Lean kernel plus the axiom audit, which is the designed
-trust base.
+None re-derived the whole probability development line by line; the soundness of that rests on the
+Lean kernel plus the axiom audit, which is the designed trust base. The reviews themselves are
+archived outside this repository rather than summarised here, so that a later independent reviewer is
+not primed by this file.

@@ -26,10 +26,10 @@ open BN254 Cryptography GarbledCircuit Cryptography.Assumptions
 
 noncomputable section
 
-/-- The share of the budget the accounting reserves for the steering hop: eight points per
-log entry (three permutation points charged at `1 / (2 ^ 128 - q) ≤ 2 / 2 ^ 128` and one
-hash-fiber chunk charged at `2 / 2 ^ 128`, in each query direction), plus the one-time
-freshness term of the two chunks the reparametrisation swaps. -/
+/-- The share of the budget the accounting reserves for the steering hop. The proved hop
+(`uniform_keyLabel_steeringBlocked_le`) costs `3 q₁ / 2 ^ 128`; this reserve is a deliberate
+over-estimate of `8 q / 2 ^ 128`, plus a `6 / 2 ^ 128` one-time term the final route does not
+spend. -/
 def steeringStep (adversary : Adversary) (parameter : Nat) : ℝ :=
   8 * ((adversary.firstQueryBudget parameter +
     adversary.secondQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 + 6 / 2 ^ 128

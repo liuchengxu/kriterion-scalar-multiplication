@@ -1,4 +1,10 @@
 /-
+**SUPERSEDED — retained for the log; the live proof does not use this file.** The steering hop
+is charged as a *label* event (`uniform_keyLabel_steeringBlocked_le`, `Proof/SteeringHop.lean`),
+at `3 q₁ / 2 ^ 128`, because outside that event the two second stages are the same *law*
+(`familyLaw_double`). No hash-fiber chunk bound is needed. Everything below is proved and the
+analysis is correct; nothing in the live proof consumes it.
+
 This file bounds the mass of one 128-bit chunk of a hash-fiber sample.
 
 The steering hop hides two programming ranges behind the adversary's log, and

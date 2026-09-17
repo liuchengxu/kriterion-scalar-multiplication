@@ -192,9 +192,9 @@ is the identical-until-bad comparison of the steered reference game with the shi
 reference game. The two have the same sample, the same first stage and the same released
 table; they differ only in the second stage, where the steered game programs the steering
 gate twice -- honestly and then steered -- and takes two fiber samples, while the shifted
-game programs once and samples once at the shifted outputs. Off the four points of the
-double programming, and off the freshness failures of the steering's requests, the two
-second stages are the same function of the same randomness. -/
+game programs once and samples once at the shifted outputs. Outside the bad event of the
+label charge (`uniform_keyLabel_steeringBlocked_le`) the two second stages are *the same law*
+(`familyLaw_double`), so the hop costs `3 q₁ / 2 ^ 128` and nothing else. -/
 theorem workPerAdvantage_of_steeringCharge [FieldCertificate] [GroupCertificate]
     (adversary : Adversary) (parameter : Nat) (scalar : NonZeroScalar) (auxiliary : Unit)
     (charge : advantage

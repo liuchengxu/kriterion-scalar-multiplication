@@ -1,4 +1,11 @@
 /-
+**PARTLY SUPERSEDED — retained for the log.** The `doubledHidden` / `publicAnswer_doubled` /
+`publicAnswer_steeringDouble` / `hybridStageTwo_doubled_agree` cluster below is dead: the live
+agreement between the two second stages is proved at the level of *laws* (`familyLaw_double`,
+`Proof/Family.lean`), not pointwise. The **freshness** half of this file
+(`not_freshnessHidden_of_covers`, `fresh_of_notMem_freshnessHidden`) **is** live — it is what
+makes the steering's freshness conditions free rather than a second charged event.
+
 This file is the deterministic skeleton of the *charge* half of the steering
 hop: the first of the two steps of step 7, and the one that must run first.
 
