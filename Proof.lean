@@ -35,3 +35,5 @@ import Proof.Assembly
 import Proof.Shifted
 import Proof.Charge
 import Proof.SteeringHop
+import Proof.LamportCompatibility
+import Proof.OracleUniform
