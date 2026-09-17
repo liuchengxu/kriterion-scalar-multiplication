@@ -810,31 +810,30 @@ theorem lazy_shiftedReferenceRound [FieldCertificate] (bridgeKey : BaseField)
 /-! ### Averaging a pointwise advantage bound over an infinite sample -/
 
 /-- A uniform pointwise advantage bound survives an outer sample, with **no** finiteness
-assumption on the sample type.
+assumption on the sample type, and with the bound required only on the sample's support.
 
 `advantage_bind_le_of_le` is stated with `[Fintype Sample]`, which the lazy family run's
 output type does not have -- it carries a `List Query` and the adversary's state. The charge
 has to average its per-transcript bound over exactly that type, so it needs this form. The
-proof avoids real summability altogether: the pointwise bound is turned into the two
-`ENNReal` inequalities `p true ≤ q true + ofReal bound`, which survive an unconditional
-`ENNReal` tsum. -/
+support restriction is what lets the per-transcript bound use the run's own transcript
+invariants, which hold only on the support. The proof avoids real summability altogether:
+the pointwise bound is turned into the two `ENNReal` inequalities
+`p true ≤ q true + ofReal bound`, which survive an unconditional `ENNReal` tsum. -/
 theorem advantage_bind_le_pointwise {Sample : Type} (law : PMF Sample)
     (first second : Sample → PMF Bool) (bound : ℝ)
-    (pointwise : ∀ sample, advantage (first sample) (second sample) ≤ bound) :
+    (pointwise : ∀ sample ∈ law.support, advantage (first sample) (second sample) ≤ bound) :
     advantage (law.bind first) (law.bind second) ≤ bound := by
-  obtain ⟨witness⟩ : Nonempty Sample := by
-    rcases isEmpty_or_nonempty Sample with empty | nonempty
-    · exact absurd (PMF.tsum_coe law) (by rw [tsum_empty]; exact zero_ne_one)
-    · exact nonempty
+  obtain ⟨witness, witnessMember⟩ := law.support_nonempty
   have nonneg : 0 ≤ bound := by
-    have step := pointwise witness
+    have step := pointwise witness witnessMember
     unfold advantage at step
     exact le_trans (abs_nonneg _) step
   have pointwiseShift : ∀ (left right : Sample → PMF Bool),
-      (∀ sample, advantage (left sample) (right sample) ≤ bound) →
-      ∀ sample, (left sample) true ≤ (right sample) true + ENNReal.ofReal bound := by
-    intro left right step sample
-    have base := step sample
+      (∀ sample ∈ law.support, advantage (left sample) (right sample) ≤ bound) →
+      ∀ sample ∈ law.support,
+        (left sample) true ≤ (right sample) true + ENNReal.ofReal bound := by
+    intro left right step sample member
+    have base := step sample member
     unfold advantage at base
     have le : ((left sample) true).toReal ≤ ((right sample) true).toReal + bound := by
       have half := (abs_sub_le_iff.mp base).1
@@ -847,14 +846,16 @@ theorem advantage_bind_le_pointwise {Sample : Type} (law : PMF Sample)
     exact (ENNReal.le_ofReal_iff_toReal_le (PMF.apply_ne_top _ _)
       (add_nonneg ENNReal.toReal_nonneg nonneg)).mpr le
   have shift : ∀ (left right : Sample → PMF Bool),
-      (∀ sample, (left sample) true ≤ (right sample) true + ENNReal.ofReal bound) →
+      (∀ sample ∈ law.support, (left sample) true ≤ (right sample) true + ENNReal.ofReal bound) →
       (law.bind left) true ≤ (law.bind right) true + ENNReal.ofReal bound := by
     intro left right step
     rw [PMF.bind_apply, PMF.bind_apply]
     calc ∑' sample, law sample * (left sample) true
-        ≤ ∑' sample, law sample * ((right sample) true + ENNReal.ofReal bound) :=
-          ENNReal.tsum_le_tsum fun sample =>
-            mul_le_mul_of_nonneg_left (step sample) zero_le
+        ≤ ∑' sample, law sample * ((right sample) true + ENNReal.ofReal bound) := by
+          refine ENNReal.tsum_le_tsum fun sample => ?_
+          by_cases member : sample ∈ law.support
+          · exact mul_le_mul_of_nonneg_left (step sample member) zero_le
+          · rw [(PMF.apply_eq_zero_iff law sample).mpr member, zero_mul, zero_mul]
       _ = ∑' sample, (law sample * (right sample) true +
             law sample * ENNReal.ofReal bound) := tsum_congr fun sample => mul_add _ _ _
       _ = (∑' sample, law sample * (right sample) true) +
@@ -871,15 +872,74 @@ theorem advantage_bind_le_pointwise {Sample : Type} (law : PMF Sample)
     rw [ENNReal.toReal_add (PMF.apply_ne_top _ _) ENNReal.ofReal_ne_top,
       ENNReal.toReal_ofReal nonneg] at mono
     linarith
-  have backward : ∀ sample, advantage (second sample) (first sample) ≤ bound := by
-    intro sample
-    have step := pointwise sample
+  have backward : ∀ sample ∈ law.support, advantage (second sample) (first sample) ≤ bound := by
+    intro sample member
+    have step := pointwise sample member
     unfold advantage at step ⊢
     rwa [abs_sub_comm]
   unfold advantage
   exact abs_sub_le_iff.mpr
     ⟨convert first second (shift first second (pointwiseShift first second pointwise)),
       convert second first (shift second first (pointwiseShift second first backward))⟩
+
+/-! ### Four independent samples in the order the charge needs -/
+
+/-- Four independent samples may be drawn in the order `third, fourth, second, first`.
+
+This is the sample order of the hop: the two fiber samples first, then the selected label
+(over which the bad event is priced), and only then the conditioned permutation family. -/
+theorem bind_comm_outward {First Second Third Fourth Result : Type} (first : PMF First)
+    (second : PMF Second) (third : PMF Third) (fourth : PMF Fourth)
+    (body : First → Second → Third → Fourth → PMF Result) :
+    (first.bind fun one => second.bind fun two => third.bind fun three =>
+        fourth.bind fun four => body one two three four) =
+      third.bind fun three => fourth.bind fun four => second.bind fun two =>
+        first.bind fun one => body one two three four := by
+  have inward : (first.bind fun one => second.bind fun two => third.bind fun three =>
+        fourth.bind fun four => body one two three four) =
+      second.bind fun two => third.bind fun three => fourth.bind fun four =>
+        first.bind fun one => body one two three four := by
+    refine (PMF.bind_comm first second _).trans ?_
+    refine congrArg (PMF.bind second) (funext fun two => ?_)
+    refine (PMF.bind_comm first third _).trans ?_
+    exact congrArg (PMF.bind third) (funext fun _ => PMF.bind_comm first fourth _)
+  refine inward.trans ?_
+  refine (PMF.bind_comm second third _).trans ?_
+  exact congrArg (PMF.bind third) (funext fun _ => PMF.bind_comm second fourth _)
+
+/-- An identical-until-bad hop of four samples whose bad event lives on the middle one and
+the two outer ones, and whose two laws agree -- for every good value of those three -- after
+the innermost sample is integrated out.
+
+This is the shape of the steering hop: the permutation family is the innermost sample, the
+selected label is the one the bad event is priced over, and the two fiber samples are the
+ones the bound is uniform in. -/
+theorem advantage_bind_le_badMiddle {Inner Label First Second : Type} (inner : PMF Inner)
+    (label : PMF Label) (first : PMF First) (second : PMF Second)
+    (leftBody rightBody : Inner → Label → First → Second → PMF Bool)
+    (bad : Label → First → Second → Prop) (bound : ℝ)
+    (agree : ∀ (choice : Label) (one : First) (two : Second), ¬ bad choice one two →
+      (inner.bind fun value => leftBody value choice one two) =
+        inner.bind fun value => rightBody value choice one two)
+    (mass : ∀ (one : First) (two : Second),
+      (label.toOuterMeasure {choice | bad choice one two}).toReal ≤ bound) :
+    advantage
+        (inner.bind fun value => label.bind fun choice => first.bind fun one =>
+          second.bind fun two => leftBody value choice one two)
+        (inner.bind fun value => label.bind fun choice => first.bind fun one =>
+          second.bind fun two => rightBody value choice one two) ≤ bound := by
+  rw [bind_comm_outward inner label first second leftBody,
+    bind_comm_outward inner label first second rightBody]
+  refine advantage_bind_le_pointwise first _ _ bound fun one _ => ?_
+  refine advantage_bind_le_pointwise second _ _ bound fun two _ => ?_
+  exact le_trans (advantage_bind_le_bad label label _ _ {choice | bad choice one two}
+    (fun _ _ => rfl) fun choice good => agree choice one two good) (mass one two)
+
+/-- Three blocks of a query budget over `2 ^ 128`, as a real number. -/
+theorem toReal_three_budget (budget : Nat) :
+    ((3 : ENNReal) * (budget : ENNReal) / 2 ^ 128).toReal = 3 * (budget : ℝ) / 2 ^ 128 := by
+  rw [ENNReal.toReal_div, ENNReal.toReal_mul, ENNReal.toReal_pow, ENNReal.toReal_ofNat,
+    ENNReal.toReal_natCast, ENNReal.toReal_ofNat]
 
 end
 
