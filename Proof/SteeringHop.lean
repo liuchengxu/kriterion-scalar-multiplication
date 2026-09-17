@@ -941,6 +941,146 @@ theorem toReal_three_budget (budget : Nat) :
   rw [ENNReal.toReal_div, ENNReal.toReal_mul, ENNReal.toReal_pow, ENNReal.toReal_ofNat,
     ENNReal.toReal_natCast, ENNReal.toReal_ofNat]
 
+/-! ### The hop, per first-stage transcript -/
+
+/-- **The steering hop, at one lazy first-stage transcript.** Given transcripts that are
+injective, cover their own log, and pin at most `budget` points in total, the shifted second
+stage and the steered second stage are within `3 * budget / 2 ^ 128`.
+
+Off the curve the two laws are equal and the bound is free. On the curve the key is sampled
+last, so both fiber samples move outside it, and for every pair of fiber samples the two
+laws agree unless the selected label is one of the `3 * budget` values the transcripts
+block. The table is key-free, so the bad event's rows are, which is what makes its mass
+uniform in the key. -/
+theorem advantage_bind_familyLaw_shifted_steered_le [FieldCertificate] [GroupCertificate]
+    (scalar : NonZeroScalar) (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (rest : PermutationOracle Garbling.EncIndex Block × (BN254.BaseField → Block × Block))
+    (carrier : NonZeroBase) (bridgeKey : BaseField) (raw : Coordinates)
+    (outcome : (AffineInput × adversary.State) × List Query) (assigns : FamilyAssignment)
+    (injective : FamilyInjective assigns) (covers : FamilyCovers assigns outcome.2)
+    (budget : Nat) (small : familyPinnedCount assigns ≤ budget) :
+    advantage
+        ((familyLaw assigns).bind fun oracle =>
+          (PMF.uniformOfFintype InputMacKey).bind fun key =>
+            releasedStageTwo adversary parameter auxiliary (oracle, rest) key carrier
+              (raw.table bridgeKey key)
+              (shiftedOutputs scalar (fun _ => bridgeKey) carrier outcome.1.1
+                (encodeCoordinates outcome.1.1 raw).hash) outcome)
+        ((familyLaw assigns).bind fun oracle =>
+          (PMF.uniformOfFintype InputMacKey).bind fun key =>
+            steeredReleasedStageTwo scalar adversary parameter auxiliary (oracle, rest) key
+              carrier (raw.table bridgeKey key) (encodeCoordinates outcome.1.1 raw).hash
+              outcome) ≤
+      3 * (budget : ℝ) / 2 ^ 128 := by
+  have nonneg : (0 : ℝ) ≤ 3 * (budget : ℝ) / 2 ^ 128 := by positivity
+  have tableEq : ∀ key : InputMacKey,
+      raw.table bridgeKey key = raw.table bridgeKey witnessTape.inputMacKey :=
+    fun key => Coordinates.table_key bridgeKey raw key witnessTape.inputMacKey
+  by_cases onCurve : curveGap outcome.1.1 = 0
+  · have shifted : shiftedOutputs scalar (fun _ => bridgeKey) carrier outcome.1.1
+        (encodeCoordinates outcome.1.1 raw).hash =
+        shiftSteering (hybridBridge scalar carrier - bridgeKey)
+          (encodeCoordinates outcome.1.1 raw).hash := by
+      rw [shiftedOutputs, if_pos onCurve]
+    rw [shifted]
+    have steeredPointwise : ∀ (oracle : PermutationOracle FixedKeyIndex Block)
+        (key : InputMacKey),
+        steeredReleasedStageTwo scalar adversary parameter auxiliary (oracle, rest) key carrier
+            (raw.table bridgeKey key) (encodeCoordinates outcome.1.1 raw).hash outcome =
+          (uniformHashFibers (encodeCoordinates outcome.1.1 raw).hash).bind fun fibers =>
+            (uniformHashFiber ((encodeCoordinates outcome.1.1 raw).hash .x7 0 +
+                (hybridBridge scalar carrier - bridgeKey))).bind fun hash =>
+              (hybridStageTwo adversary parameter auxiliary
+                  (raw.table bridgeKey witnessTape.inputMacKey, carrierBits carrier)
+                  outcome.1.1 outcome.1.2
+                  (programAll (stageTwoState (programIndices (selectedPrograms key outcome.1.1
+                      (encodeCoordinates outcome.1.1 raw).hash
+                      (tableRow (raw.table bridgeKey witnessTape.inputMacKey)) fibers) oracle,
+                      rest) outcome.2 (raw.table bridgeKey witnessTape.inputMacKey) carrier key)
+                    (steerRequests (raw.table bridgeKey witnessTape.inputMacKey)
+                      (selectedLabel key outcome.1.1 .x7 0) outcome.1.1
+                      ((encodeCoordinates outcome.1.1 raw).hash .x7 0 +
+                        (hybridBridge scalar carrier - bridgeKey)) hash))).map Prod.fst := by
+      intro oracle key
+      rw [steeredReleasedStageTwo_programAll scalar adversary parameter auxiliary (oracle, rest)
+        key carrier bridgeKey raw outcome onCurve, tableEq key]
+    have shiftedPointwise : ∀ (oracle : PermutationOracle FixedKeyIndex Block)
+        (key : InputMacKey),
+        releasedStageTwo adversary parameter auxiliary (oracle, rest) key carrier
+            (raw.table bridgeKey key)
+            (shiftSteering (hybridBridge scalar carrier - bridgeKey)
+              (encodeCoordinates outcome.1.1 raw).hash) outcome =
+          (uniformHashFibers (encodeCoordinates outcome.1.1 raw).hash).bind fun fibers =>
+            (uniformHashFiber ((encodeCoordinates outcome.1.1 raw).hash .x7 0 +
+                (hybridBridge scalar carrier - bridgeKey))).bind fun hash =>
+              (hybridStageTwo adversary parameter auxiliary
+                  (raw.table bridgeKey witnessTape.inputMacKey, carrierBits carrier)
+                  outcome.1.1 outcome.1.2
+                  (stageTwoState (shiftedOracle key outcome.1.1
+                      (encodeCoordinates outcome.1.1 raw).hash
+                      (tableRow (raw.table bridgeKey witnessTape.inputMacKey)) fibers
+                      ((encodeCoordinates outcome.1.1 raw).hash .x7 0 +
+                        (hybridBridge scalar carrier - bridgeKey)) hash oracle, rest)
+                    outcome.2 (raw.table bridgeKey witnessTape.inputMacKey) carrier key)).map
+                Prod.fst := by
+      intro oracle key
+      rw [releasedStageTwo_shifted adversary parameter auxiliary (oracle, rest) key carrier
+        (raw.table bridgeKey key) (encodeCoordinates outcome.1.1 raw).hash
+        (hybridBridge scalar carrier - bridgeKey) outcome, tableEq key]
+    rw [congrArg (PMF.bind (familyLaw assigns)) (funext fun oracle =>
+        congrArg (PMF.bind (PMF.uniformOfFintype InputMacKey)) (funext fun key =>
+          shiftedPointwise oracle key)),
+      congrArg (PMF.bind (familyLaw assigns)) (funext fun oracle =>
+        congrArg (PMF.bind (PMF.uniformOfFintype InputMacKey)) (funext fun key =>
+          steeredPointwise oracle key))]
+    refine advantage_bind_le_badMiddle (familyLaw assigns) (PMF.uniformOfFintype InputMacKey)
+      (uniformHashFibers (encodeCoordinates outcome.1.1 raw).hash)
+      (uniformHashFiber ((encodeCoordinates outcome.1.1 raw).hash .x7 0 +
+        (hybridBridge scalar carrier - bridgeKey))) _ _
+      (fun key fibers hash => steeringBlocked assigns
+        (selectedPrograms key outcome.1.1 (encodeCoordinates outcome.1.1 raw).hash
+          (tableRow (raw.table bridgeKey witnessTape.inputMacKey)) fibers)
+        (steerPrograms key outcome.1.1 ((encodeCoordinates outcome.1.1 raw).hash .x7 0 +
+            (hybridBridge scalar carrier - bridgeKey)) hash
+          (tableRow (raw.table bridgeKey witnessTape.inputMacKey) .x7 0))) _ ?_ ?_
+    · intro key fibers hash good
+      exact (bind_familyLaw_programAll_eq_shifted adversary parameter auxiliary rest key carrier
+        (raw.table bridgeKey witnessTape.inputMacKey) outcome.1.1 outcome.1.2 outcome.2
+        (encodeCoordinates outcome.1.1 raw).hash fibers
+        ((encodeCoordinates outcome.1.1 raw).hash .x7 0 +
+          (hybridBridge scalar carrier - bridgeKey)) hash assigns injective covers good).symm
+    · intro fibers hash
+      refine le_trans (ENNReal.toReal_mono (by finiteness)
+        (uniform_keyLabel_steeringBlocked_le assigns injective budget small outcome.1.1
+          (encodeCoordinates outcome.1.1 raw).hash
+          (tableRow (raw.table bridgeKey witnessTape.inputMacKey)) fibers
+          ((encodeCoordinates outcome.1.1 raw).hash .x7 0 +
+            (hybridBridge scalar carrier - bridgeKey)) hash)) ?_
+      exact le_of_eq (toReal_three_budget budget)
+  · have shifted : shiftedOutputs scalar (fun _ => bridgeKey) carrier outcome.1.1
+        (encodeCoordinates outcome.1.1 raw).hash =
+        (encodeCoordinates outcome.1.1 raw).hash := by
+      rw [shiftedOutputs, if_neg onCurve]
+    have same : ((familyLaw assigns).bind fun oracle =>
+          (PMF.uniformOfFintype InputMacKey).bind fun key =>
+            steeredReleasedStageTwo scalar adversary parameter auxiliary (oracle, rest) key
+              carrier (raw.table bridgeKey key) (encodeCoordinates outcome.1.1 raw).hash
+              outcome) =
+        (familyLaw assigns).bind fun oracle =>
+          (PMF.uniformOfFintype InputMacKey).bind fun key =>
+            releasedStageTwo adversary parameter auxiliary (oracle, rest) key carrier
+              (raw.table bridgeKey key)
+              (shiftedOutputs scalar (fun _ => bridgeKey) carrier outcome.1.1
+                (encodeCoordinates outcome.1.1 raw).hash) outcome := by
+      rw [shifted]
+      exact congrArg (PMF.bind _) (funext fun oracle =>
+        congrArg (PMF.bind _) (funext fun key =>
+          steeredReleasedStageTwo_offCurve scalar adversary parameter auxiliary (oracle, rest)
+            key carrier (raw.table bridgeKey key) (encodeCoordinates outcome.1.1 raw).hash
+            outcome onCurve))
+    rw [same, advantage_eq, sub_self, abs_zero]
+    exact nonneg
+
 end
 
 end Kriterion.ArgoMAC.Security
