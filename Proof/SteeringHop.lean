@@ -685,6 +685,128 @@ theorem bind_key_shiftedReferenceRound [FieldCertificate] (bridgeKey : BaseField
       witnessTape.inputMacKey carrier raw)]
   exact PMF.bind_comm _ _ _
 
+/-! ### The first stage in the lazy family model -/
+
+/-- A logged first stage consumed as a run. -/
+theorem bind_loggedFirstStage {Value : Type} (adversary : Adversary) (parameter : Nat)
+    (auxiliary : Unit) (circuit : Garbling.Public) (view : View)
+    (continuation : (AffineInput × adversary.State) × List Query → PMF Value) :
+    (loggedFirstStage adversary parameter auxiliary circuit view).bind continuation =
+      ((adversary.chooseInput parameter circuit auxiliary).run idealOracle
+          (firstState view circuit.1 ⟨1, one_ne_zero⟩ witnessTape.inputMacKey)).bind
+        fun output => continuation (output.1, output.2.log) :=
+  bind_of_map _ _ _
+
+/-- The state the first stage starts from, with the permutation family left blank. The lazy
+family run never reads it, and the eager run reads it only through `setFamily`. -/
+def chargeFirstState
+    (rest : PermutationOracle Garbling.EncIndex Block × (BN254.BaseField → Block × Block))
+    (table : CurveMembership.Table) : State :=
+  firstState (⟨fun _ => Equiv.refl Block⟩, rest) table ⟨1, one_ne_zero⟩ witnessTape.inputMacKey
+
+theorem setFamily_chargeFirstState
+    (rest : PermutationOracle Garbling.EncIndex Block × (BN254.BaseField → Block × Block))
+    (table : CurveMembership.Table) (oracle : PermutationOracle FixedKeyIndex Block) :
+    setFamily (chargeFirstState rest table) oracle =
+      firstState (oracle, rest) table ⟨1, one_ne_zero⟩ witnessTape.inputMacKey := rfl
+
+/-- The steered round with the permutation family conditioned on the first stage's
+transcripts and the key sampled afterwards. This is the sample order the charge needs. -/
+theorem lazy_steeredReferenceRound [FieldCertificate] [GroupCertificate] (bridgeKey : BaseField)
+    (scalar : NonZeroScalar) (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (rest : PermutationOracle Garbling.EncIndex Block × (BN254.BaseField → Block × Block))
+    (carrier : NonZeroBase) (raw : Coordinates) :
+    ((PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+        (PMF.uniformOfFintype InputMacKey).bind fun key =>
+          steeredReferenceRound (fun _ => bridgeKey) scalar adversary parameter auxiliary
+            (oracle, rest) key carrier raw) =
+      (lazyFamilyRun (adversary.chooseInput parameter
+            (raw.table bridgeKey witnessTape.inputMacKey, carrierBits carrier) auxiliary)
+          (chargeFirstState rest (raw.table bridgeKey witnessTape.inputMacKey))
+          (fun _ _ => none)).bind fun output =>
+        (familyLaw output.2).bind fun oracle =>
+          (PMF.uniformOfFintype InputMacKey).bind fun key =>
+            steeredReleasedStageTwo scalar adversary parameter auxiliary (oracle, rest) key
+              carrier (raw.table bridgeKey key) (encodeCoordinates output.1.1.1 raw).hash
+              output.1 := by
+  have left : ((PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+        (PMF.uniformOfFintype InputMacKey).bind fun key =>
+          steeredReferenceRound (fun _ => bridgeKey) scalar adversary parameter auxiliary
+            (oracle, rest) key carrier raw) =
+      (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+        ((adversary.chooseInput parameter
+            (raw.table bridgeKey witnessTape.inputMacKey, carrierBits carrier) auxiliary).run
+            idealOracle
+            (setFamily (chargeFirstState rest (raw.table bridgeKey witnessTape.inputMacKey))
+              oracle)).bind fun output =>
+          (PMF.uniformOfFintype InputMacKey).bind fun key =>
+            steeredReleasedStageTwo scalar adversary parameter auxiliary (oracle, rest) key
+              carrier (raw.table bridgeKey key)
+              (encodeCoordinates (output.1, output.2.log).1.1 raw).hash
+              (output.1, output.2.log) := by
+    refine congrArg (PMF.bind _) (funext fun oracle => ?_)
+    rw [bind_key_steeredReferenceRound bridgeKey scalar adversary parameter auxiliary
+      (oracle, rest) carrier raw, bind_loggedFirstStage]
+    rfl
+  rw [left]
+  exact uniform_run_familyLaw
+    (adversary.chooseInput parameter
+      (raw.table bridgeKey witnessTape.inputMacKey, carrierBits carrier) auxiliary)
+    (chargeFirstState rest (raw.table bridgeKey witnessTape.inputMacKey))
+    (fun outcome oracle => (PMF.uniformOfFintype InputMacKey).bind fun key =>
+      steeredReleasedStageTwo scalar adversary parameter auxiliary (oracle, rest) key carrier
+        (raw.table bridgeKey key) (encodeCoordinates outcome.1.1 raw).hash outcome)
+
+/-- The shifted round in the same sample order. -/
+theorem lazy_shiftedReferenceRound [FieldCertificate] (bridgeKey : BaseField)
+    (scalar : NonZeroScalar) (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (rest : PermutationOracle Garbling.EncIndex Block × (BN254.BaseField → Block × Block))
+    (carrier : NonZeroBase) (raw : Coordinates) :
+    ((PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+        (PMF.uniformOfFintype InputMacKey).bind fun key =>
+          shiftedReferenceRound (fun _ => bridgeKey) scalar adversary parameter auxiliary
+            (oracle, rest) key carrier raw) =
+      (lazyFamilyRun (adversary.chooseInput parameter
+            (raw.table bridgeKey witnessTape.inputMacKey, carrierBits carrier) auxiliary)
+          (chargeFirstState rest (raw.table bridgeKey witnessTape.inputMacKey))
+          (fun _ _ => none)).bind fun output =>
+        (familyLaw output.2).bind fun oracle =>
+          (PMF.uniformOfFintype InputMacKey).bind fun key =>
+            releasedStageTwo adversary parameter auxiliary (oracle, rest) key carrier
+              (raw.table bridgeKey key)
+              (shiftedOutputs scalar (fun _ => bridgeKey) carrier output.1.1.1
+                (encodeCoordinates output.1.1.1 raw).hash) output.1 := by
+  have left : ((PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+        (PMF.uniformOfFintype InputMacKey).bind fun key =>
+          shiftedReferenceRound (fun _ => bridgeKey) scalar adversary parameter auxiliary
+            (oracle, rest) key carrier raw) =
+      (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+        ((adversary.chooseInput parameter
+            (raw.table bridgeKey witnessTape.inputMacKey, carrierBits carrier) auxiliary).run
+            idealOracle
+            (setFamily (chargeFirstState rest (raw.table bridgeKey witnessTape.inputMacKey))
+              oracle)).bind fun output =>
+          (PMF.uniformOfFintype InputMacKey).bind fun key =>
+            releasedStageTwo adversary parameter auxiliary (oracle, rest) key carrier
+              (raw.table bridgeKey key)
+              (shiftedOutputs scalar (fun _ => bridgeKey) carrier (output.1, output.2.log).1.1
+                (encodeCoordinates (output.1, output.2.log).1.1 raw).hash)
+              (output.1, output.2.log) := by
+    refine congrArg (PMF.bind _) (funext fun oracle => ?_)
+    rw [bind_key_shiftedReferenceRound bridgeKey scalar adversary parameter auxiliary
+      (oracle, rest) carrier raw, bind_loggedFirstStage]
+    rfl
+  rw [left]
+  exact uniform_run_familyLaw
+    (adversary.chooseInput parameter
+      (raw.table bridgeKey witnessTape.inputMacKey, carrierBits carrier) auxiliary)
+    (chargeFirstState rest (raw.table bridgeKey witnessTape.inputMacKey))
+    (fun outcome oracle => (PMF.uniformOfFintype InputMacKey).bind fun key =>
+      releasedStageTwo adversary parameter auxiliary (oracle, rest) key carrier
+        (raw.table bridgeKey key)
+        (shiftedOutputs scalar (fun _ => bridgeKey) carrier outcome.1.1
+          (encodeCoordinates outcome.1.1 raw).hash) outcome)
+
 end
 
 end Kriterion.ArgoMAC.Security
