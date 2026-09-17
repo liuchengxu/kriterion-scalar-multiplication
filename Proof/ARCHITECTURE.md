@@ -1,12 +1,20 @@
 # Proof architecture for `hybridGame_close_to_idealGame`
 
-Status of the tree (after slice 3r): **the obligation is PROVED and the tree has ZERO
-`sorry`.** `hybridGame_close_to_idealGame` and `adaptivePrivacy` depend on exactly
-`[propext, Classical.choice, Quot.sound]`; the statement of the obligation is byte-identical
-to the day-one reference (`git show ab07aa8:Proof/Privacy.lean`). Every step of §4 is
-machine-checked, including step 7 -- the steering hop -- at `3 q₁ / 2 ^ 128`, inside the
-reserved `steeringStep`. This document is the map of that proof; read "Corrections from
-slice 3r" first, then "Corrections from slice 3q".
+Status of the tree (after slice 3s): **the obligation is PROVED, the tree has ZERO `sorry`,
+and the submission is complete -- the real verifier passes all five checks.**
+`Submission.solution : Kriterion.Solution` exists and depends on exactly
+`[propext, Classical.choice, Quot.sound]`; `verify.json` reads
+`layout/build/obligation/axioms/lint = pass` with `ciphertext_bytes = 40768`.
+`hybridGame_close_to_idealGame` and `adaptivePrivacy` depend on the same three axioms, and
+the statement of the obligation is byte-identical to the day-one reference
+(`git show ab07aa8:Proof/Privacy.lean`). Every step of §4 is machine-checked, including step
+7 -- the steering hop -- at `3 q₁ / 2 ^ 128`, inside the reserved `steeringStep`. This
+document is the map of that proof; read "Corrections from slice 3s" first, then "Corrections
+from slice 3r", then "Corrections from slice 3q".
+
+Slice 3s was packaging only and changed no proof: it added the two missing `Solution` fields
+(`Proof/LamportCompatibility.lean`, `Proof/OracleUniform.lean`) and assembled
+`Submission.lean`. See "Corrections from slice 3s".
 
 Slice 3r closed the hop and the obligation (`Proof/SteeringHop.lean`, `Proof/Privacy.lean`):
 the sample reshaping of "Corrections from slice 3q", the per-transcript bound, the tower
@@ -1179,6 +1187,52 @@ EVENT ONLY. READ THIS BEFORE THE SLICE-3N AND SLICE-3O BLOCKS.**
   * A hypothesis of the form `value = {index := i, domain := l, range := s}.range` does not
     fire under `▸`; re-type it with `have : value = s := hypothesis` first (the projection is
     defeq but not syntactic).
+
+**Corrections from slice 3s -- THE SUBMISSION IS COMPLETE. READ THIS FIRST.**
+
+* **The entry exists and the real verifier passes.** `Submission.solution` fills all 22
+  fields of `Kriterion.Solution`; `verify.json` is
+  `{"layout":"pass","build":"pass","obligation":"pass","axioms":{"result":"pass","list":["propext","Classical.choice","Quot.sound"]},"lint":"pass"}`
+  with `ciphertext_bytes = 40768`. No proof was touched: `git diff` against the slice-3r head
+  is empty for `Construction/`, `Construction.lean`, `Proof/Privacy.lean`, `Proof/Chain.lean`
+  and `Proof/Assembly.lean`.
+* **`Proof/LamportCompatibility.lean`** (new) carries `keyPairs`, the index-by-index bridge
+  `selectedLabels_eq`, and `Lamport.compatible :
+  GarbledCircuit.LamportCompatibility Garbling.garbledCircuit affineLamportBits`. The baseline's
+  `Proof/LamportCompatibility/Labels.lean` transfers essentially verbatim because
+  `Construction/ArgoMAC/Input.lean` is `cmp`-identical to the baseline's and our
+  `Lamport.selectedLabels` has the same `Vector.ofFn` / `dif` shape. The file is **data, not
+  just proof**: `LamportCompatibility.keyPairs` is a `Vector (Block × Block) 508`, so this
+  file must stay computable or the entry stops compiling.
+* **`Proof/OracleUniform.lean`** (new) carries `uniform_map_equiv`, `uniform_map_fst`,
+  `pinTables`, `splitTape` and `oracleUniform`. The tape is the public oracle triple times the
+  tapes on which that triple is pinned, so the uniform tape law maps onto the uniform public
+  oracle by one product marginal -- the baseline's route.
+* **Instance mismatch is the only real friction in `oracleUniform`.** The challenge states the
+  certificate at `@Fintype.ofFinite _ fixedFinite` and friends; the proof wants the tape's own
+  `garblingRandomnessFintype`. `Fintype` is data, so these are only *propositionally* equal.
+  The bridge is `standardAssumptions_congr`, which takes both instances as **explicit
+  arguments** and substitutes them with `obtain rfl := Subsingleton.elim _ _`. Doing the same
+  `obtain rfl : instance = inferInstance` *inside* a theorem that binds the instance as a local
+  hypothesis does **not** work: Lean treats any local of class type as a local instance, so
+  `inferInstance` resolves to the hypothesis itself and `subst` fails with "occurs at".
+  Both instances must be explicit binders of the same lemma.
+* **`ciphertextSize` needs `dsimp only [Garbling.garbledCircuit]` first.** Unifying
+  `((scheme field group).garble parameter scalar tape)` with `Garbling.garble parameter scalar
+  tape` directly blows the recursion depth and then the `isDefEq` heartbeat budget; one `dsimp`
+  on the scheme literal makes `Wire.garble_encode_length` apply in about a second. Raising
+  `maxRecDepth` alone does not help.
+* **The verifier's lint requires `Submission.solution` itself to be computable**
+  (`Lean.isNoncomputable env` applied to the entry name must be false). Every data field is
+  therefore computable -- `Wire.encoding`, `Garbling.evaluationOracle`, `Garbling.garbledCircuit`,
+  `Lamport.compatible`, `Security.idealOracle`, `Security.idealView`, `Security.witnessTape` --
+  while every noncomputable witness (the tape law, the simulator, the uniform oracle law) sits
+  behind a `Prop` field. Adding a noncomputable data field to this bundle fails the lint, not
+  the build.
+* **`Submission.lean` must `import Solution`** as well as `Construction` and `Proof`: the
+  generated `Verify.lean` is only `import Submission` plus
+  `noncomputable def verified : Kriterion.Solution := Submission.solution`, so
+  `Kriterion.Solution` has to be reachable transitively.
 
 **Corrections from slice 3r -- THE OBLIGATION IS PROVED. READ THIS FIRST; IT SUPERSEDES
 EVERY "WHAT IS LEFT" LIST BELOW.**
