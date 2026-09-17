@@ -854,7 +854,7 @@ theorem advantage_bind_le_pointwise {Sample : Type} (law : PMF Sample)
     calc ∑' sample, law sample * (left sample) true
         ≤ ∑' sample, law sample * ((right sample) true + ENNReal.ofReal bound) :=
           ENNReal.tsum_le_tsum fun sample =>
-            mul_le_mul_of_nonneg_left (step sample) zero_le'
+            mul_le_mul_of_nonneg_left (step sample) zero_le
       _ = ∑' sample, (law sample * (right sample) true +
             law sample * ENNReal.ofReal bound) := tsum_congr fun sample => mul_add _ _ _
       _ = (∑' sample, law sample * (right sample) true) +
