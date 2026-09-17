@@ -1081,6 +1081,75 @@ theorem advantage_bind_familyLaw_shifted_steered_le [FieldCertificate] [GroupCer
     rw [same, advantage_eq, sub_self, abs_zero]
     exact nonneg
 
+/-! ### The hop, as a game -/
+
+/-- **The charge of the steering hop.** The shifted reference game and the steered reference
+game -- the two ends of step 7 -- are within `3 q₁ / 2 ^ 128`.
+
+Every level of the tower is peeled with the pointwise average: the bridge key, the tape, the
+carrier, the raw coordinates, and finally the lazy first stage's own output. Under that last
+sample the permutation family is conditioned on the transcripts the first stage built, the
+selected label is sampled after them, and the per-transcript bound applies with the first
+stage's budget as the pinned count. -/
+theorem advantage_shiftedReferenceGame_steeredReferenceGame_le [FieldCertificate]
+    [GroupCertificate] (scalar : NonZeroScalar) (adversary : Adversary) (parameter : Nat)
+    (auxiliary : Unit) :
+    advantage
+        ((PMF.uniformOfFintype NonZeroBase).bind fun bridgeKey =>
+          shiftedReferenceGame (fun _ => bridgeKey.value) scalar adversary parameter auxiliary)
+        ((PMF.uniformOfFintype NonZeroBase).bind fun bridgeKey =>
+          steeredReferenceGame (fun _ => bridgeKey.value) scalar adversary parameter auxiliary) ≤
+      3 * ((adversary.firstQueryBudget parameter : Nat) : ℝ) / 2 ^ 128 := by
+  refine advantage_bind_le_pointwise _ _ _ _ fun bridgeKey _ => ?_
+  have shiftedGame : shiftedReferenceGame (fun _ => bridgeKey.value) scalar adversary parameter
+        auxiliary =
+      (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+        (PMF.uniformOfFintype NonZeroBase).bind fun carrier =>
+          (PMF.uniformOfFintype Coordinates).bind fun raw =>
+            (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+              (PMF.uniformOfFintype InputMacKey).bind fun key =>
+                shiftedReferenceRound (fun _ => bridgeKey.value) scalar adversary parameter
+                  auxiliary (oracle, tape.encOracle, tape.hashOracle) key carrier raw := by
+    unfold shiftedReferenceGame
+    exact congrArg (PMF.bind _) (funext fun _ => bind_comm_outward _ _ _ _ _)
+  have steeredGame : steeredReferenceGame (fun _ => bridgeKey.value) scalar adversary parameter
+        auxiliary =
+      (PMF.uniformOfFintype Garbling.Randomness).bind fun tape =>
+        (PMF.uniformOfFintype NonZeroBase).bind fun carrier =>
+          (PMF.uniformOfFintype Coordinates).bind fun raw =>
+            (PMF.uniformOfFintype (PermutationOracle FixedKeyIndex Block)).bind fun oracle =>
+              (PMF.uniformOfFintype InputMacKey).bind fun key =>
+                steeredReferenceRound (fun _ => bridgeKey.value) scalar adversary parameter
+                  auxiliary (oracle, tape.encOracle, tape.hashOracle) key carrier raw := by
+    unfold steeredReferenceGame
+    exact congrArg (PMF.bind _) (funext fun _ => bind_comm_outward _ _ _ _ _)
+  rw [shiftedGame, steeredGame]
+  refine advantage_bind_le_pointwise _ _ _ _ fun tape _ => ?_
+  refine advantage_bind_le_pointwise _ _ _ _ fun carrier _ => ?_
+  refine advantage_bind_le_pointwise _ _ _ _ fun raw _ => ?_
+  rw [lazy_shiftedReferenceRound bridgeKey.value scalar adversary parameter auxiliary
+      (tape.encOracle, tape.hashOracle) carrier raw,
+    lazy_steeredReferenceRound bridgeKey.value scalar adversary parameter auxiliary
+      (tape.encOracle, tape.hashOracle) carrier raw]
+  refine advantage_bind_le_pointwise _ _ _ _ fun output member => ?_
+  obtain ⟨injective, covers⟩ := lazyFamilyRun_covers
+    (adversary.chooseInput parameter
+      (raw.table bridgeKey.value witnessTape.inputMacKey, carrierBits carrier) auxiliary)
+    (chargeFirstState (tape.encOracle, tape.hashOracle)
+      (raw.table bridgeKey.value witnessTape.inputMacKey))
+    (fun _ _ => none) (fun _ => emptyAssignment_injective) familyCovers_empty output member
+  have small : familyPinnedCount output.2 ≤ adversary.firstQueryBudget parameter := by
+    have counted := lazyFamilyRun_pinnedCount
+      (adversary.chooseInput parameter
+        (raw.table bridgeKey.value witnessTape.inputMacKey, carrierBits carrier) auxiliary)
+      (chargeFirstState (tape.encOracle, tape.hashOracle)
+        (raw.table bridgeKey.value witnessTape.inputMacKey))
+      (fun _ _ => none) output member
+    rwa [familyPinnedCount_empty, Nat.zero_add] at counted
+  exact advantage_bind_familyLaw_shifted_steered_le scalar adversary parameter auxiliary
+    (tape.encOracle, tape.hashOracle) carrier bridgeKey.value raw output.1 output.2 injective
+    covers (adversary.firstQueryBudget parameter) small
+
 end
 
 end Kriterion.ArgoMAC.Security
