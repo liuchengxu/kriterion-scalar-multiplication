@@ -605,6 +605,86 @@ theorem steeringCharge_le_steeringStep (adversary : Adversary) (parameter : Nat)
   rw [div_eq_mul_inv, div_eq_mul_inv]
   exact mul_le_mul_of_nonneg_right key (by positivity)
 
+/-! ### The key is sampled last -/
+
+/-- The first stage of either round does not read the key: the reference table is key-free,
+and the logged first stage runs on the witness tape's own key. So the key sample may be moved
+past it -- which is what the charge needs, because the bad event is charged over the selected
+label and the label must be sampled after the transcripts and after both fiber samples. -/
+theorem steeredReferenceRound_firstStage_key [FieldCertificate] [GroupCertificate]
+    (bridgeKey : BaseField) (scalar : NonZeroScalar) (adversary : Adversary) (parameter : Nat)
+    (auxiliary : Unit) (view : View) (key other : InputMacKey) (carrier : NonZeroBase)
+    (raw : Coordinates) :
+    steeredReferenceRound (fun _ => bridgeKey) scalar adversary parameter auxiliary view key
+        carrier raw =
+      (loggedFirstStage adversary parameter auxiliary
+          (raw.table bridgeKey other, carrierBits carrier) view).bind fun outcome =>
+        steeredReleasedStageTwo scalar adversary parameter auxiliary view key carrier
+          (raw.table bridgeKey key) (encodeCoordinates outcome.1.1 raw).hash outcome :=
+  congrArg (fun table => (loggedFirstStage adversary parameter auxiliary
+      (table, carrierBits carrier) view).bind fun outcome =>
+        steeredReleasedStageTwo scalar adversary parameter auxiliary view key carrier
+          (raw.table bridgeKey key) (encodeCoordinates outcome.1.1 raw).hash outcome)
+    (Coordinates.table_key bridgeKey raw key other)
+
+/-- The same for the shifted round. -/
+theorem shiftedReferenceRound_firstStage_key [FieldCertificate] (bridgeKey : BaseField)
+    (scalar : NonZeroScalar) (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (view : View) (key other : InputMacKey) (carrier : NonZeroBase) (raw : Coordinates) :
+    shiftedReferenceRound (fun _ => bridgeKey) scalar adversary parameter auxiliary view key
+        carrier raw =
+      (loggedFirstStage adversary parameter auxiliary
+          (raw.table bridgeKey other, carrierBits carrier) view).bind fun outcome =>
+        releasedStageTwo adversary parameter auxiliary view key carrier
+          (raw.table bridgeKey key)
+          (shiftedOutputs scalar (fun _ => bridgeKey) carrier outcome.1.1
+            (encodeCoordinates outcome.1.1 raw).hash) outcome :=
+  congrArg (fun table => (loggedFirstStage adversary parameter auxiliary
+      (table, carrierBits carrier) view).bind fun outcome =>
+        releasedStageTwo adversary parameter auxiliary view key carrier
+          (raw.table bridgeKey key)
+          (shiftedOutputs scalar (fun _ => bridgeKey) carrier outcome.1.1
+            (encodeCoordinates outcome.1.1 raw).hash) outcome)
+    (Coordinates.table_key bridgeKey raw key other)
+
+/-- The key sample of the steered round moved past the first stage. -/
+theorem bind_key_steeredReferenceRound [FieldCertificate] [GroupCertificate]
+    (bridgeKey : BaseField) (scalar : NonZeroScalar) (adversary : Adversary) (parameter : Nat)
+    (auxiliary : Unit) (view : View) (carrier : NonZeroBase) (raw : Coordinates) :
+    ((PMF.uniformOfFintype InputMacKey).bind fun key =>
+        steeredReferenceRound (fun _ => bridgeKey) scalar adversary parameter auxiliary view key
+          carrier raw) =
+      (loggedFirstStage adversary parameter auxiliary
+          (raw.table bridgeKey witnessTape.inputMacKey, carrierBits carrier) view).bind
+        fun outcome =>
+          (PMF.uniformOfFintype InputMacKey).bind fun key =>
+            steeredReleasedStageTwo scalar adversary parameter auxiliary view key carrier
+              (raw.table bridgeKey key) (encodeCoordinates outcome.1.1 raw).hash outcome := by
+  rw [congrArg (PMF.bind (PMF.uniformOfFintype InputMacKey)) (funext fun key =>
+    steeredReferenceRound_firstStage_key bridgeKey scalar adversary parameter auxiliary view key
+      witnessTape.inputMacKey carrier raw)]
+  exact PMF.bind_comm _ _ _
+
+/-- The key sample of the shifted round moved past the first stage. -/
+theorem bind_key_shiftedReferenceRound [FieldCertificate] (bridgeKey : BaseField)
+    (scalar : NonZeroScalar) (adversary : Adversary) (parameter : Nat) (auxiliary : Unit)
+    (view : View) (carrier : NonZeroBase) (raw : Coordinates) :
+    ((PMF.uniformOfFintype InputMacKey).bind fun key =>
+        shiftedReferenceRound (fun _ => bridgeKey) scalar adversary parameter auxiliary view key
+          carrier raw) =
+      (loggedFirstStage adversary parameter auxiliary
+          (raw.table bridgeKey witnessTape.inputMacKey, carrierBits carrier) view).bind
+        fun outcome =>
+          (PMF.uniformOfFintype InputMacKey).bind fun key =>
+            releasedStageTwo adversary parameter auxiliary view key carrier
+              (raw.table bridgeKey key)
+              (shiftedOutputs scalar (fun _ => bridgeKey) carrier outcome.1.1
+                (encodeCoordinates outcome.1.1 raw).hash) outcome := by
+  rw [congrArg (PMF.bind (PMF.uniformOfFintype InputMacKey)) (funext fun key =>
+    shiftedReferenceRound_firstStage_key bridgeKey scalar adversary parameter auxiliary view key
+      witnessTape.inputMacKey carrier raw)]
+  exact PMF.bind_comm _ _ _
+
 end
 
 end Kriterion.ArgoMAC.Security
