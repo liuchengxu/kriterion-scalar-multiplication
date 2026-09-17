@@ -3,6 +3,7 @@ import Proof.Correctness
 import Proof.Finite
 import Proof.Simulator
 import Proof.Steering
+import Proof.Hybrid
 import Proof.Privacy
 import Proof.Reference
 import Proof.Logged

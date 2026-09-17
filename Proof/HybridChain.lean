@@ -17,7 +17,7 @@ nonzero mask by a uniform one.
 
 import Proof.Chain
 import Proof.GameShape
-import Proof.Privacy
+import Proof.Hybrid
 import Proof.Reparametrise
 
 namespace Kriterion.ArgoMAC.Security
